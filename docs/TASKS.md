@@ -1,0 +1,132 @@
+# Tasks
+
+## Setup
+
+- [x] Create project startup docs.
+- [x] Create `requirements.txt` with Playwright dependency.
+- [x] Install Python dependencies.
+- [x] Install Chromium through Playwright.
+
+## MVP
+
+- [x] Create `main.py`.
+- [x] Add top-level config dictionary.
+- [x] Implement `CourseAutoTester`.
+- [x] Implement login workflow.
+- [x] Implement course and chapter navigation hooks.
+- [x] Implement video speed control.
+- [x] Implement video progress polling and next-chapter loop.
+- [x] Add random delays around click and input operations.
+- [x] Add basic exception handling.
+- [x] Add a PowerShell launcher that uses local `.env` credentials when available.
+- [x] Configure Chaoxing login, target course keyword, course popup handling, and automatic commitment confirmation.
+- [x] Add README usage instructions.
+- [x] Add independent `assignment_tester.py` dry-run module for assignment/quiz interaction robustness testing.
+- [x] Add AI decision API wrapper with JSON parsing and timeout/error handling.
+- [x] Add DOM extraction for question text, options, question type, and option controls.
+- [x] Add answer-to-control mapping with dry-run safety defaults.
+
+## Validation
+
+- [x] Run Python syntax check.
+- [x] Run import smoke test.
+- [x] Probe authenticated login and course discovery path.
+- [x] Fix `Locator.first` runtime error and verify locator helper path.
+- [x] Fix delayed iframe course-card lookup and verify with a dynamic iframe smoke test.
+- [x] Verify authenticated path through chapter open, video detection, and `playbackRate=2`.
+- [x] Verify `assignment_tester.py` syntax/import.
+- [x] Verify fake API response parsing.
+- [x] Verify local DOM question extraction smoke test.
+- [x] Configure assignment tester AI endpoint and model from `.env`.
+- [x] Run live endpoint smoke test after tunnel recovery; `ask_ai_brain()` returned `["A"]`.
+- [x] Probe live Chaoxing login DOM and confirm `#phone`, `#pwd`, `#loginBtn`.
+- [x] Update `assignment_tester.py` Chaoxing login URL/selectors and local `.env` credentials.
+- [x] Verify both scripts locate login selectors on the live page.
+- [x] Add Chaoxing course-to-assignment navigation in `assignment_tester.py`.
+- [x] Add cross-frame and `frame_locator` lookup support.
+- [x] Add `.Py_tk` / `.Py_answer` question extraction support.
+- [x] Verify live login -> course -> assignment tab flow; current course has `暂无作业`.
+- [x] Verify local iframe question extraction for Chaoxing-style DOM.
+- [x] Add background monitor mode with `scan_inbox()` and `while True` polling.
+- [x] Add `SERVER_MODE` / headless config and scan interval config.
+- [x] Add timestamped scan/result/completion logging.
+- [x] Add direct Inbox URL support and course assignment fallback.
+- [x] Verify local Inbox scan candidate detection.
+- [x] Verify one live monitor scan round with fallback to empty course assignments.
+- [x] Update Inbox scan to confirmed Chaoxing DOM: `li.dataBody_item` and `a.notice_title`.
+- [x] Verify local Chaoxing Inbox DOM smoke test with `作业：` title filtering.
+- [x] Fix `main.py` next-chapter selector with `#prevNextFocusNext` and verify navigation to the next chapter.
+- [x] Add `main.py` onclick fallback for Chaoxing next-chapter control.
+- [x] Verify `CourseAutoTester.click_next_chapter()` lands on the next lesson and detects video.
+- [x] Add environment-variable runtime settings to `main.py` for headless mode, slow motion, playback rate, chapter count, timeouts, and screenshots.
+- [x] Add command-line course selection for the course watcher.
+- [x] Add system browser launch options for the course watcher to avoid blocking on slow Playwright Chromium downloads.
+- [x] Treat missing/disabled next-section controls after a finished video as normal course completion instead of a hard failure.
+- [x] Process multiple `<video>` elements on the same learning task page before moving next.
+- [x] Treat no-video learning task pages as courseware/non-video tasks and quickly open/return when a courseware entry is visible.
+- [x] Accept same-URL next-task transitions when page content changes.
+- [x] Add video playback stall detection and recovery.
+- [x] Harden Chaoxing next-section click with disabled-state checks and URL-change confirmation.
+- [x] Add failure screenshots for course watcher errors.
+- [x] Verify course watcher syntax, config parsing, and local next-section URL-change smoke test.
+- [x] Verify course watcher CLI help, argument forwarding through `run_chaoxing.ps1`, config override parsing, and conflicting `--headless --headed` rejection.
+- [x] Live-test `中国近现代史纲要` with `--max-chapters 1 --headless --fast-actions`: opened course, watched one 52.5s video at 2x to completion, clicked next, and accepted same-URL page-content transition.
+- [x] Live-test `中国近现代史纲要` with `--max-chapters 5 --headless --fast-actions`: completed 5 learning task points, including 8 videos, no-video task handling, courseware quick-open handling, same-URL transitions, and onclick fallback after a click was intercepted by a completion overlay.
+- [x] Inspect OpenClaw Feishu-triggered `中国近现代史纲要` run and screenshots.
+- [x] Make course watcher failure paths return non-zero process exit codes.
+- [x] Retry stale video progress reads by re-locating the indexed video before failing.
+- [x] Re-run a fresh OpenClaw Feishu-triggered course check after the stale-video-locator fix.
+- [x] Confirm the fresh check passed the old task point 3 video 3/3 failure point.
+- [ ] Run a separate explicit full-course validation if full completion evidence is needed.
+- [x] Create tutai deployment documentation in `D:\infra-vault\servers\tutai\course-rpa-node.md`.
+- [x] Create a local tutai deployment archive excluding `.env`, logs, and caches.
+- [x] Verify tutai SSH host key fingerprint and update local `known_hosts`.
+- [x] Configure usable SSH credentials for tutai installation.
+- [x] Install deployment archive on tutai under `D:\services\course-rpa-node`.
+- [x] Validate tutai with `python -m py_compile main.py assignment_tester.py` and `python main.py --help`.
+- [x] Fix tutai browser compatibility by using Playwright `1.29.1` / Chromium `109` on Windows Server 2012 R2.
+- [x] Validate tutai headless Chromium launch with a Playwright smoke test.
+- [x] Create `D:\services\course-rpa-node\.env` on tutai without storing secrets in repo docs.
+- [x] Attempt tutai `--max-chapters 1` course smoke test.
+- [x] Remove tutai deployment directory and synced remote `.env` after deciding not to use tutai for now.
+- [ ] Resolve tutai Chaoxing `passport403.html` redirect block before treating tutai as a real course runner.
+- [ ] Re-run tutai `--max-chapters 1` course smoke test after the network/proxy block is resolved.
+- [x] Remove all course navigation and fallback behavior from `assignment_tester.py`.
+- [x] Switch assignment AI config to assignment-scoped `.env` variable names.
+- [x] Verify one live pure Inbox monitor scan round with no course fallback.
+- [x] Fix login-to-Inbox navigation race and verify visible one-round monitor scan.
+- [x] Fix live Inbox shell loading by clicking the `收件箱` navigation entry before scanning `li.dataBody_item`.
+- [x] Match read Inbox assignment notices using both `作业：` and real DOM `作业:`.
+- [x] Open Chaoxing notice detail pages through `.openNotice[data-url]`.
+- [x] Extract the real `intoexamorwork` URL from notice attachment iframe `window.att_web.url`.
+- [x] Add Chaoxing `dowork` selectors for `.questionLi`, `.mark_name`, and `.answerBg` role controls.
+- [x] Verify visible one-round read `思想道德与法治` Inbox flow through dry-run question extraction and answer mapping.
+- [x] Add multi-question traversal over `.questionLi` containers with per-question stem/option/type extraction.
+- [x] Hard-block live AI calls and answer clicks on real Chaoxing assignment hosts.
+- [x] Optimize `.answerBg` option text extraction to avoid slow fallback timeouts.
+- [x] Verify headless multi-question dry-run on the live `dowork` page without AI calls or answer clicks.
+- [x] Add non-choice question detection for `input[type=text]` and `textarea`.
+- [x] Add text-answer API payload/response handling for authorized staging environments.
+- [x] Add dry-run text fill logging with `[探测到简答题] 准备填入内容：...`.
+- [x] Verify local text-question DOM smoke test and mocked text-answer API parsing.
+- [x] Document that assignment tester safe defaults have drifted from the original staging-only design.
+- [x] Add staging-only submit hardening with `.Btn_blue_1` / `a.btnSubmit` selector support.
+- [x] Add submit scroll-into-view, pre/post-click waits, JS dialog acceptance, custom confirmation handling, and explicit `[Action]` logs.
+- [x] Verify local submit fixtures for custom confirmation and native JS alert handling.
+- [x] Re-apply assignment submit double-confirmation handling, expand confirm selectors, speed up interaction delays, and verify native/custom confirmation fixtures.
+- [x] Add multi-step submit confirmation handling for custom popups whose final action button is also labeled `提交`.
+- [x] Update documentation to reflect current assignment tester safety configuration drift and Inbox-only monitor behavior.
+- [x] Record 2026-05-31 user direction that the assignment tester real-site hard-block may remain relaxed during the temporary experiment phase.
+- [x] Reduce assignment tester default interaction delays, page-settle waits, next/submit lookup waits, and submit-confirmation waits for fast experiment runs.
+- [x] Make assignment tester incomplete-answer blocking configurable instead of sleeping 7200 seconds by default.
+- [x] Optimize course watcher end-of-video polling based on remaining duration and playback rate.
+- [x] Extend `main.py --fast-actions` to cap video polling and non-video courseware hold time.
+- [ ] Restore assignment tester safe defaults and real-site hard-block after the temporary experiment phase.
+- [ ] Run full browser flow until a video ends and next-chapter click is verified.
+
+## Deferred
+
+- [x] Move credentials to a local ignored `.env` file.
+- [ ] Add structured logging.
+- [ ] Add selector profiles for multiple course platforms.
+- [x] Add screenshots on failure.
