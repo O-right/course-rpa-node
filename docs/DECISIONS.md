@@ -113,3 +113,15 @@ Reason: The current user goal is to complete authorized assignment interaction e
 Decision: `main.py` still uses periodic progress polling, but near the end of a video it estimates remaining wall time from `duration`, `currentTime`, and `playbackRate` and wakes early instead of always sleeping the full poll interval. `--fast-actions` also caps progress polling and non-video courseware hold time.
 
 Reason: Waiting the full progress poll interval after a nearly completed video creates avoidable idle time. The remaining-time estimate reduces tail latency without changing the playback recovery logic.
+
+## 2026-05-31: GitHub Remote Is O-right/course-rpa-node
+
+Decision: Use `https://github.com/O-right/course-rpa-node` as the canonical GitHub remote for this project. Local `main` tracks `origin/main`; `.env`, `logs/`, `dist/`, `__pycache__/`, and temporary probe JSON files are ignored.
+
+Reason: The project now needs durable off-machine source backup and handoff. Runtime credentials, logs, screenshots, caches, and deployment archives are machine-local artifacts and must stay out of GitHub.
+
+## 2026-05-31: Chat2API Health Requires Both Tunnel And Upstream Token
+
+Decision: Treat `api.2070814.xyz` as healthy only when both `/v1/models` and an authenticated `/v1/chat/completions` smoke pass. Service uptime or Cloudflare Tunnel reachability alone is insufficient.
+
+Reason: The current `glm/chat2api` check showed `chat2api.service` and `cloudflared-api-tunnel.service` running and `/v1/models` returning 200, while authenticated chat completions returned 500 because `chat2api` had no valid token and was falling back to a no-auth ChatGPT path that hit `Unusual activity` / proxy errors.

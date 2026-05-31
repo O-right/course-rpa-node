@@ -121,6 +121,13 @@
 - [x] Make assignment tester incomplete-answer blocking configurable instead of sleeping 7200 seconds by default.
 - [x] Optimize course watcher end-of-video polling based on remaining duration and playback rate.
 - [x] Extend `main.py --fast-actions` to cap video polling and non-video courseware hold time.
+- [x] Initialize local Git repository and upload project to GitHub as `O-right/course-rpa-node`.
+- [x] Verify `.env`, logs, deployment archive, and caches are excluded from GitHub upload.
+- [x] Reconcile local Git history with the API-created GitHub upload and push normal `main` tracking `origin/main`.
+- [x] Inspect `glm/chat2api` reverse API services, Cloudflare Tunnel ingress, and public `/v1/models` health.
+- [x] Reproduce current authenticated `/v1/chat/completions` failure against `api.2070814.xyz`; current result is HTTP 500.
+- [ ] Restore `glm/chat2api` access token/session refresh so authenticated `/v1/chat/completions` succeeds again.
+- [ ] Re-test assignment AI endpoint through `assignment_tester.ask_ai_brain()` after `chat2api` recovery.
 - [ ] Restore assignment tester safe defaults and real-site hard-block after the temporary experiment phase.
 - [ ] Run full browser flow until a video ends and next-chapter click is verified.
 

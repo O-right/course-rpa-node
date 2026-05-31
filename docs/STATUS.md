@@ -6,7 +6,7 @@ Course watcher hardened for recoverable long runs.
 
 ## Current Focus
 
-Course watcher is live-verified across the first 5 `中国近现代史纲要` learning task points. Assignment tester is in a temporary experiment phase where the real Chaoxing assignment host hard-block may remain relaxed by explicit user direction and should be restored later.
+Course watcher is live-verified across the first 5 `中国近现代史纲要` learning task points. Assignment tester is in a temporary experiment phase where the real Chaoxing assignment host hard-block may remain relaxed by explicit user direction and should be restored later. The project is now hosted on GitHub at `https://github.com/O-right/course-rpa-node`; local `main` tracks `origin/main`.
 
 ## Completed
 
@@ -122,6 +122,9 @@ Course watcher is live-verified across the first 5 `中国近现代史纲要` le
 - Updated docs on 2026-05-31 to record the current assignment tester experiment stance: the hard-block drift is intentional for now, not the next blocker, and must be restored after the experiment phase.
 - Optimized assignment tester timing for the temporary experiment phase: default click/fill delays are now `0.05-0.15s`, next/submit reading delays are `0.1-0.3s`, networkidle waits are disabled by default, submit confirmation uses short polling, and incomplete-answer blocking is configurable instead of sleeping for 7200 seconds by default.
 - Optimized course watcher timing: video completion polling now wakes early based on remaining duration and playback rate, and `--fast-actions` also caps progress polling at 3 seconds and non-video courseware hold time at 0.2 seconds.
+- Initialized local Git repository, created GitHub repository `O-right/course-rpa-node`, uploaded source/docs while excluding `.env`, `logs/`, `dist/`, `__pycache__/`, and synced local `main` with `origin/main` after normal GitHub HTTPS connectivity recovered.
+- Inspected remote `glm` LXC `chat2api`: `chat2api.service`, `cloudflared-api-tunnel.service`, and `mihomo.service` are running; `api.2070814.xyz` routes through Cloudflare Tunnel to `127.0.0.1:5005`; `/v1/models` returns 200 locally and publicly.
+- Diagnosed current assignment AI endpoint degradation: authenticated `/v1/chat/completions` returns 500; `chat2api` logs show `Request token is empty, use no-auth 3.5`, `Unusual activity has been detected`, and intermittent `SSL_ERROR_SYSCALL` to `chatgpt.com`; `chat2api-session-refresh.service` is failed and `data/token.txt` is effectively empty.
 
 ## Next Action
 
@@ -136,6 +139,8 @@ Course watcher is live-verified across the first 5 `中国近现代史纲要` le
 - Continue course watcher validation locally if full-course completion evidence is needed.
 - During the temporary assignment tester experiment, keep runs explicit and bounded with environment variables; record any live behavior and restore the real-site hard-block when the experiment ends.
 - For fastest assignment experiments, use the new `ASSIGNMENT_*_DELAY_SECONDS`, `ASSIGNMENT_SETTLE_WAIT_MS`, `ASSIGNMENT_NEXT_BUTTON_TIMEOUT_MS`, `ASSIGNMENT_CONFIRMATION_*`, and `ASSIGNMENT_BLOCK_ON_INCOMPLETE=false` controls.
+- Restore `glm/chat2api` health before relying on live AI answer generation: refresh a valid ChatGPT access/session token, rerun `chat2api-session-refresh.service`, and re-smoke authenticated `/v1/chat/completions`.
+- If `chat2api` still reports `Unusual activity` after token refresh, switch or repair the `mihomo` `AI/Proxies` route before rerunning assignment AI tests.
 - Configure `assignment_tester.py` selectors only against authorized pages.
 - Keep live runs constrained with `ASSIGNMENT_MAX_SCAN_ROUNDS=1` and `ASSIGNMENT_MAX_CANDIDATES_PER_ROUND=1` when doing manual Inbox pressure tests.
 - Use localhost or another controlled fixture to validate live AI answer selection, real clicking behavior, text `.fill()`, and submit confirmation behavior when possible.
@@ -147,7 +152,7 @@ Course watcher is live-verified across the first 5 `中国近现代史纲要` le
 - tutai deployment has been removed. Re-deploy only after deciding on a viable network path; the previous real course smoke was blocked by Chaoxing returning the self-looping `passport403.html` redirect from tutai's cloud-server network.
 - tutai is Windows Server 2012 R2; current Playwright/Chromium releases are incompatible. Reinstalling unpinned `playwright` may upgrade back to an incompatible browser unless the runtime is pinned or the OS is upgraded.
 - `assignment_tester.py` currently has a documented safety configuration drift: code defaults allow non-dry-run behavior and real-site AI/actions more broadly than the original staging-only design. This is accepted temporarily for the current experiment by user direction, but must be restored before returning to normal operation.
-- Assignment AI endpoint depends on the remote Cloudflare tunnel and upstream service staying online.
+- Assignment AI endpoint currently cannot be trusted for live answers: Cloudflare Tunnel and `/v1/models` are up, but authenticated `/v1/chat/completions` returns 500 because `glm/chat2api` lacks a valid token and is hitting ChatGPT no-auth/proxy friction.
 - Login credentials are stored only in local ignored `.env`; do not share or commit it.
 - `assignment_tester.py` has no course fallback by design; if the forced Inbox URL changes, update `ASSIGNMENT_INBOX_URL`.
 
@@ -155,6 +160,8 @@ Course watcher is live-verified across the first 5 `中国近现代史纲要` le
 
 - Local syntax checks can pass immediately.
 - Latest timing optimization checks passed: `python -m py_compile main.py assignment_tester.py`, `python main.py --help`, `.\run_chaoxing.ps1 --help`, course fast-action config override smoke, assignment fast default config smoke, and a local two-question assignment fixture that selected answers and submitted in 0.844s using system Chrome headless.
+- GitHub sync checks passed: `git push -u origin main` succeeded after network recovery, local branch is clean and tracks `origin/main`, and remote tree contains only source/docs/script files, not `.env`, `logs/`, `dist/`, or caches.
+- `glm/chat2api` checks passed for ingress only: SSH to `glm` works, services are running, public `/v1/models` is 200, and unauthenticated chat returns 403 as expected; authenticated chat smoke currently returns 500 and remains unresolved.
 - End-of-video next-task handling is verified on `中国近现代史纲要` for 8 videos across 5 task points, including same-URL transitions and an onclick fallback after overlay interception.
 - Full-course completion is not yet verified.
 - Local course-watcher checks passed: syntax check, env config parsing, and simulated `#prevNextFocusNext` URL-change smoke test.
@@ -180,6 +187,7 @@ Course watcher is live-verified across the first 5 `中国近现代史纲要` le
 - `dist/course-rpa-node-tutai-20260427.zip`
 - `.env` (local ignored credentials)
 - `README.md`
+- `.gitignore`
 - `docs/TASKS.md`
 - `docs/STATUS.md`
 - `docs/DECISIONS.md`
