@@ -126,8 +126,26 @@
 - [x] Reconcile local Git history with the API-created GitHub upload and push normal `main` tracking `origin/main`.
 - [x] Inspect `glm/chat2api` reverse API services, Cloudflare Tunnel ingress, and public `/v1/models` health.
 - [x] Reproduce current authenticated `/v1/chat/completions` failure against `api.2070814.xyz`; current result is HTTP 500.
-- [ ] Restore `glm/chat2api` access token/session refresh so authenticated `/v1/chat/completions` succeeds again.
-- [ ] Re-test assignment AI endpoint through `assignment_tester.ask_ai_brain()` after `chat2api` recovery.
+- [x] Restore `glm/chat2api` access token/session refresh so authenticated `/v1/chat/completions` succeeds again.
+- [x] Re-test assignment AI endpoint through `assignment_tester.ask_ai_brain()` after `chat2api` recovery.
+- [x] Run one authorized real assignment experiment through Inbox, AI answer selection, answer clicks, submit, and result-page verification.
+- [x] Add AI decision audit logs, multiple-choice second-pass review, answer normalization, and pre-submit answer summaries to `assignment_tester.py`.
+- [x] Add screenshot-based image-question extraction and multimodal AI payload support to `assignment_tester.py`.
+- [x] Verify local image-question fixture and live `chat2api` multimodal data URL smoke.
+- [x] Add low-confidence AI answer halt before next/submit.
+- [x] Verify confidence parsing, halt behavior, and live `chat2api` confidence response smoke.
+- [x] Add unanswerable/incomplete-question halt before submit.
+- [x] Add post-submit low-score halt with configurable score threshold.
+- [x] Run guarded live Inbox scan; current configured Inbox entry found 0 assignment candidates.
+- [x] Fix Inbox direct URL discovery and `dataurl` notice-detail extraction.
+- [x] Run guarded live assignment flow until a low-confidence/unanswerable question halt before submit.
+- [x] Add excessive-option-count guard for malformed question extraction.
+- [x] Diagnose and support Chaoxing shared-option questions (`共用选项题`).
+- [x] Verify shared-option parsing/click controls on live question 53/54 without submission.
+- [x] Re-run guarded live flow after shared-option fix; halted safely on a different low-confidence single-choice question.
+- [x] Add enhanced AI review consensus, transient AI request retries, login navigation retries, and pre-submit risk-budget guarding for medium-confidence assignment answers.
+- [x] Stop before submit when `ASSIGNMENT_MAX_QUESTIONS` caps a long assignment.
+- [x] Fix max-question cap detection by keeping a `max_questions + 1` sentinel container and verifying no next/submit action is taken after cap overflow.
 - [ ] Restore assignment tester safe defaults and real-site hard-block after the temporary experiment phase.
 - [ ] Run full browser flow until a video ends and next-chapter click is verified.
 

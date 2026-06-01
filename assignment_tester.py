@@ -1,9 +1,11 @@
+import base64
 import json
 import logging
 import os
 import random
 import re
 import time
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -53,16 +55,43 @@ CONFIG: Dict[str, Any] = {
     "api_url": os.getenv("ASSIGNMENT_AI_API_URL", "https://api.2070814.xyz/v1/chat/completions"),
     "api_key": os.getenv("ASSIGNMENT_AI_API_KEY", ""),
     "model": os.getenv("ASSIGNMENT_AI_MODEL", "gpt-5.5"),
+    "ai_review_multiple": env_flag("ASSIGNMENT_AI_REVIEW_MULTIPLE", "true"),
+    "ai_log_raw_response": env_flag("ASSIGNMENT_AI_LOG_RAW_RESPONSE", "true"),
+    "ai_enable_images": env_flag("ASSIGNMENT_AI_ENABLE_IMAGES", "true"),
+    "ai_max_images_per_question": env_int("ASSIGNMENT_AI_MAX_IMAGES_PER_QUESTION", 1),
+    "ai_max_image_bytes": env_int("ASSIGNMENT_AI_MAX_IMAGE_BYTES", 1_500_000),
+    "ai_min_confidence": env_float("ASSIGNMENT_AI_MIN_CONFIDENCE", 0.75),
+    "ai_accept_confidence": env_float(
+        "ASSIGNMENT_AI_ACCEPT_CONFIDENCE",
+        env_float("ASSIGNMENT_AI_MIN_CONFIDENCE", 0.75),
+    ),
+    "ai_review_confidence": env_float("ASSIGNMENT_AI_REVIEW_CONFIDENCE", 0.55),
+    "ai_enhanced_review": env_flag("ASSIGNMENT_AI_ENHANCED_REVIEW", "true"),
+    "ai_review_samples": env_int("ASSIGNMENT_AI_REVIEW_SAMPLES", 3),
+    "ai_consensus_ratio": env_float("ASSIGNMENT_AI_CONSENSUS_RATIO", 0.66),
+    "ai_review_temperature": env_float("ASSIGNMENT_AI_REVIEW_TEMPERATURE", 0.2),
+    "ai_require_confidence": env_flag("ASSIGNMENT_AI_REQUIRE_CONFIDENCE", "true"),
+    "stop_on_low_confidence": env_flag("ASSIGNMENT_STOP_ON_LOW_CONFIDENCE", "true"),
+    "hold_browser_on_low_confidence": env_flag("ASSIGNMENT_HOLD_BROWSER_ON_LOW_CONFIDENCE", "true"),
+    "risk_budget_points": env_float("ASSIGNMENT_RISK_BUDGET_POINTS", 5.0),
+    "submit_within_risk_budget": env_flag("ASSIGNMENT_SUBMIT_WITHIN_RISK_BUDGET", "true"),
+    "stop_on_low_score": env_flag("ASSIGNMENT_STOP_ON_LOW_SCORE", "true"),
+    "min_acceptable_score": env_float("ASSIGNMENT_MIN_ACCEPTABLE_SCORE", 80.0),
+    "stop_on_unanswerable": env_flag("ASSIGNMENT_STOP_ON_UNANSWERABLE", "true"),
     "server_mode": env_flag("ASSIGNMENT_SERVER_MODE"),
     "headless": env_flag("ASSIGNMENT_HEADLESS", os.getenv("ASSIGNMENT_SERVER_MODE", "false")),
     "browser_channel": os.getenv("ASSIGNMENT_BROWSER_CHANNEL", "chrome"),
     "browser_executable_path": os.getenv("ASSIGNMENT_BROWSER_EXECUTABLE_PATH", ""),
     "timeout_ms": env_int("ASSIGNMENT_TIMEOUT_MS", 15_000),
+    "navigation_retries": env_int("ASSIGNMENT_NAVIGATION_RETRIES", 2),
+    "navigation_retry_delay_seconds": env_float("ASSIGNMENT_NAVIGATION_RETRY_DELAY_SECONDS", 3.0),
     "lookup_timeout_ms": env_int("ASSIGNMENT_LOOKUP_TIMEOUT_MS", 12_000),
     "locator_probe_timeout_ms": env_int("ASSIGNMENT_LOCATOR_PROBE_TIMEOUT_MS", 300),
     "locator_retry_interval_seconds": env_float("ASSIGNMENT_LOCATOR_RETRY_INTERVAL_SECONDS", 0.1),
     "action_timeout_ms": env_int("ASSIGNMENT_ACTION_TIMEOUT_MS", 5_000),
     "api_timeout_seconds": env_int("ASSIGNMENT_AI_TIMEOUT_SECONDS", 30),
+    "ai_request_retries": env_int("ASSIGNMENT_AI_REQUEST_RETRIES", 2),
+    "ai_retry_delay_seconds": env_float("ASSIGNMENT_AI_RETRY_DELAY_SECONDS", 2.0),
     "delay_range_seconds": (
         env_float("ASSIGNMENT_MIN_ACTION_DELAY_SECONDS", 0.05),
         env_float("ASSIGNMENT_MAX_ACTION_DELAY_SECONDS", 0.15),
@@ -84,12 +113,14 @@ CONFIG: Dict[str, Any] = {
     "max_confirmation_rounds": env_int("ASSIGNMENT_MAX_CONFIRMATION_ROUNDS", 3),
     "block_on_incomplete": env_flag("ASSIGNMENT_BLOCK_ON_INCOMPLETE", "false"),
     "incomplete_block_seconds": env_int("ASSIGNMENT_INCOMPLETE_BLOCK_SECONDS", 7200),
+    "max_options_per_question": env_int("ASSIGNMENT_MAX_OPTIONS_PER_QUESTION", 12),
     "hold_browser_on_exit": env_flag("ASSIGNMENT_HOLD_BROWSER_ON_EXIT", "false"),
-    "max_questions": env_int("ASSIGNMENT_MAX_QUESTIONS", 50),
+    "max_questions": env_int("ASSIGNMENT_MAX_QUESTIONS", 120),
     "scan_interval_seconds": env_int("ASSIGNMENT_SCAN_INTERVAL_SECONDS", 3600),
     "max_scan_rounds": env_int("ASSIGNMENT_MAX_SCAN_ROUNDS", 0),
     "max_candidates_per_round": env_int("ASSIGNMENT_MAX_CANDIDATES_PER_ROUND", 10),
-    "inbox_keywords": ["作业：", "作业:"],
+    "inbox_keywords": ["作业：", "作业:", "作业", "测试", "练习题"],
+    "inbox_exclude_keywords": ["作业结束提醒"],
     "dry_run": env_flag("ASSIGNMENT_DRY_RUN", "false"),
     "allow_submission": env_flag("ASSIGNMENT_ALLOW_SUBMISSION", "true"),
     "allow_live_ai_on_real_site": env_flag("ASSIGNMENT_ALLOW_LIVE_AI_ON_REAL_SITE", "true"),
@@ -126,6 +157,7 @@ CONFIG: Dict[str, Any] = {
         "option_input": "input[type='radio'], input[type='checkbox'], [role='radio'], [role='checkbox']",
         "option_label": "label, .option-text, .answer-text, .Py_answer",
         "text_answer_input": "input[type='text'], textarea",
+        "question_media": "img, svg, canvas, [style*='background-image']",
         "next_button": "button:has-text('下一题'), a:has-text('下一题'), button:has-text('下一步')",
         "submit_button": (
             ".Btn_blue_1:has-text('提交'), a.btnSubmit, "
@@ -157,8 +189,14 @@ CONFIG: Dict[str, Any] = {
 SYSTEM_PROMPT = (
     "你是一个授权测试环境中的自动化交互决策引擎，请根据题目和选项输出答案，必须严格只返回 JSON 格式。"
     "你是一个大学教授。请先在心里一步步分析每个选项的对错，然后再给出最终的正确选项字母。"
-    "选择题返回选项字母，例如单选返回 {\"answer\": [\"A\"]}，多选返回 {\"answer\": [\"A\", \"C\"]}。"
-    "如果是填空题或简答题，请直接返回答案文本，例如 {\"answer\": [\"答案文本\"]}。不要包含其他字符。"
+    "选择题返回选项字母，例如单选返回 {\"answer\": [\"A\"], \"confidence\": 0.92}，"
+    "多选返回 {\"answer\": [\"A\", \"C\"], \"confidence\": 0.86}。"
+    "如果是填空题或简答题，请直接返回答案文本，例如 {\"answer\": [\"答案文本\"], \"confidence\": 0.8}。"
+    "如果是共用选项题，请按每个小题的顺序返回选项字母列表，例如 4 个小题返回 "
+    "{\"answer\": [\"A\", \"C\", \"B\", \"E\"], \"confidence\": 0.82}。"
+    "confidence 必须是 0 到 1 之间的小数，表示你对最终答案正确性的把握；"
+    "如果题干/图片/选项信息不足或把握较低，也要给出最佳猜测，但 confidence 必须降低，并附加短字段 reason 和 evidence。"
+    "不要包含 JSON 以外的其他字符。"
 )
 
 
@@ -166,11 +204,43 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 LOGGER = logging.getLogger("assignment_tester")
 
 
+@dataclass
+class QuestionMedia:
+    label: str
+    data_url: str
+    byte_size: int
+    source: str
+
+
+@dataclass
+class QuestionData:
+    text: str
+    options: Dict[str, str]
+    question_type: str
+    controls: Dict[str, Locator]
+    media: List[QuestionMedia]
+    sub_questions: Optional[List[str]] = None
+
+
+@dataclass
+class AIAnswerResult:
+    answers: List[str]
+    confidence: Optional[float]
+    low_confidence: bool
+    reason: str
+    risk_points: float = 0.0
+    consensus_ratio: float = 1.0
+    attempts: int = 1
+    review_required: bool = False
+    accepted_with_risk: bool = False
+
+
 def ask_ai_brain(
     question_text: str,
     options_dict: Dict[str, str],
     question_type: Any = "unknown",
     config: Optional[Dict[str, Any]] = None,
+    media: Optional[List[QuestionMedia]] = None,
 ) -> Optional[List[str]]:
     """Ask the configured decision API. Returns None on recoverable failure."""
     if isinstance(question_type, dict) and config is None:
@@ -182,45 +252,444 @@ def ask_ai_brain(
     if cfg.get("api_key"):
         headers["Authorization"] = f"Bearer {cfg['api_key']}"
 
+    try:
+        decision = ask_ai_brain_decision(
+            question_text,
+            options_dict,
+            question_type,
+            cfg,
+            media,
+            headers=headers,
+        )
+        if not decision or decision.low_confidence:
+            return None
+        return decision.answers or None
+    except (requests.RequestException, KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        LOGGER.warning("AI decision failed; skipping current question. reason=%s", exc)
+        return None
+
+
+def ask_ai_brain_decision(
+    question_text: str,
+    options_dict: Dict[str, str],
+    question_type: Any = "unknown",
+    config: Optional[Dict[str, Any]] = None,
+    media: Optional[List[QuestionMedia]] = None,
+    headers: Optional[Dict[str, str]] = None,
+) -> Optional[AIAnswerResult]:
+    """Ask the configured decision API and include confidence metadata."""
+    if isinstance(question_type, dict) and config is None:
+        config = question_type
+        question_type = "unknown"
+    question_type = str(question_type)
+    cfg = config or CONFIG
+    request_headers = headers or {"Content-Type": "application/json"}
+    if cfg.get("api_key") and "Authorization" not in request_headers:
+        request_headers["Authorization"] = f"Bearer {cfg['api_key']}"
+
+    try:
+        decision = request_ai_answers(
+            cfg,
+            request_headers,
+            question_type,
+            question_text,
+            options_dict,
+            media or [],
+            label="primary",
+        )
+        review_needed = should_run_enhanced_review(cfg, question_type, decision, options_dict)
+        if review_needed:
+            decision = run_enhanced_ai_review(
+                cfg,
+                request_headers,
+                question_type,
+                question_text,
+                options_dict,
+                media or [],
+                decision,
+            )
+        elif (
+            question_type == "multiple"
+            and cfg.get("ai_review_multiple")
+            and decision.answers
+            and len(options_dict) >= 2
+        ):
+            reviewed_decision = request_ai_answers(
+                cfg,
+                request_headers,
+                question_type,
+                question_text,
+                options_dict,
+                media or [],
+                label="multiple-review",
+                first_answer=decision.answers,
+            )
+            if reviewed_decision.answers:
+                if reviewed_decision.answers != decision.answers:
+                    LOGGER.info(
+                        "AI multiple-review adjusted answer %s -> %s",
+                        decision.answers,
+                        reviewed_decision.answers,
+                    )
+                decision = reviewed_decision
+        LOGGER.info(
+            "AI final answer type=%s options=%s answer=%s confidence=%s low_confidence=%s "
+            "risk_points=%.2f consensus=%.2f attempts=%s media=%s question=%s",
+            question_type,
+            list(options_dict.keys()),
+            decision.answers,
+            decision.confidence,
+            decision.low_confidence,
+            decision.risk_points,
+            decision.consensus_ratio,
+            decision.attempts,
+            len(media or []),
+            re.sub(r"\s+", " ", question_text)[:120],
+        )
+        return decision
+    except (requests.RequestException, KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        LOGGER.warning("AI decision failed; skipping current question. reason=%s", exc)
+        return None
+
+
+def request_ai_answers(
+    cfg: Dict[str, Any],
+    headers: Dict[str, str],
+    question_type: str,
+    question_text: str,
+    options_dict: Dict[str, str],
+    media: List[QuestionMedia],
+    label: str,
+    first_answer: Optional[List[str]] = None,
+    instruction: str = "",
+    temperature: Optional[float] = None,
+) -> AIAnswerResult:
+    user_payload: Dict[str, Any] = {
+        "question_type": question_type,
+        "question": question_text,
+        "options": options_dict,
+    }
+    if first_answer is not None:
+        user_payload.update(
+            {
+                "first_answer": first_answer,
+                "review_instruction": (
+                    "请独立复核这道多选题的完整正确选项。不要默认 first_answer 正确；"
+                    "如果存在漏选或多选，请返回修正后的完整选项列表。"
+                ),
+            }
+        )
+    if instruction:
+        user_payload["review_instruction"] = instruction
+
     payload = {
         "model": cfg["model"],
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": json.dumps(
-                    {"question_type": question_type, "question": question_text, "options": options_dict},
-                    ensure_ascii=False,
-                ),
-            },
+            {"role": "user", "content": build_ai_user_content(user_payload, media)},
         ],
-        "temperature": 0,
+        "temperature": 0 if temperature is None else temperature,
     }
+    response = post_ai_request_with_retries(cfg, headers, payload, label)
+    data = response.json()
+    content = data["choices"][0]["message"]["content"]
+    if cfg.get("ai_log_raw_response"):
+        LOGGER.info("AI %s raw response: %s", label, content)
+    parsed = json.loads(content)
+    answers = parsed.get("answer")
+    normalized = normalize_ai_answers(answers, question_type, options_dict)
+    if not normalized:
+        raise ValueError(f"AI {label} response did not contain usable answer")
+    confidence = parse_ai_confidence(parsed)
+    low_confidence, reason = evaluate_ai_confidence(cfg, parsed, confidence)
+    evidence = str(parsed.get("evidence") or "").strip()
+    if evidence:
+        reason = f"{reason}; evidence={evidence}" if reason else f"evidence={evidence}"
+    LOGGER.info(
+        "AI %s normalized answer=%s confidence=%s low_confidence=%s reason=%s",
+        label,
+        normalized,
+        confidence,
+        low_confidence,
+        reason,
+    )
+    return AIAnswerResult(normalized, confidence, low_confidence, reason)
 
-    try:
-        response = requests.post(
-            cfg["api_url"],
-            headers=headers,
-            json=payload,
-            timeout=cfg["api_timeout_seconds"],
-        )
-        response.raise_for_status()
-        data = response.json()
-        content = data["choices"][0]["message"]["content"]
-        parsed = json.loads(content)
-        answers = parsed.get("answer")
-        if isinstance(answers, str) and question_type == "text":
-            answers = [answers]
-        if not isinstance(answers, list):
-            raise ValueError("AI response JSON does not contain a list field named 'answer'")
-        if question_type == "text":
-            normalized = [str(item).strip() for item in answers if str(item).strip()]
-        else:
-            normalized = [str(item).strip().upper() for item in answers if str(item).strip()]
-        return normalized or None
-    except (requests.RequestException, KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        LOGGER.warning("AI decision failed; skipping current question. reason=%s", exc)
+
+def post_ai_request_with_retries(
+    cfg: Dict[str, Any],
+    headers: Dict[str, str],
+    payload: Dict[str, Any],
+    label: str,
+) -> requests.Response:
+    max_retries = max(0, int(cfg.get("ai_request_retries", 2)))
+    retry_delay = max(0.0, float(cfg.get("ai_retry_delay_seconds", 2.0)))
+    last_exc: Optional[requests.RequestException] = None
+    for attempt in range(1, max_retries + 2):
+        try:
+            response = requests.post(
+                cfg["api_url"],
+                headers=headers,
+                json=payload,
+                timeout=cfg["api_timeout_seconds"],
+            )
+            response.raise_for_status()
+            return response
+        except requests.RequestException as exc:
+            last_exc = exc
+            LOGGER.warning(
+                "AI %s request attempt %s/%s failed: %s",
+                label,
+                attempt,
+                max_retries + 1,
+                exc,
+            )
+            if attempt > max_retries:
+                break
+            time.sleep(retry_delay * attempt)
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("AI request failed without exception")
+
+
+def should_run_enhanced_review(
+    cfg: Dict[str, Any],
+    question_type: str,
+    decision: AIAnswerResult,
+    options_dict: Dict[str, str],
+) -> bool:
+    if not cfg.get("ai_enhanced_review"):
+        return False
+    if not decision.answers:
+        return False
+    if question_type in {"multiple", "shared_options"} and len(options_dict) >= 2:
+        return True
+    confidence = decision.confidence
+    if confidence is None:
+        return bool(cfg.get("ai_require_confidence"))
+    accept_confidence = float(cfg.get("ai_accept_confidence", cfg.get("ai_min_confidence", 0.75)))
+    review_confidence = float(cfg.get("ai_review_confidence", 0.55))
+    return review_confidence <= confidence < accept_confidence
+
+
+def run_enhanced_ai_review(
+    cfg: Dict[str, Any],
+    headers: Dict[str, str],
+    question_type: str,
+    question_text: str,
+    options_dict: Dict[str, str],
+    media: List[QuestionMedia],
+    primary: AIAnswerResult,
+) -> AIAnswerResult:
+    requested_samples = max(1, int(cfg.get("ai_review_samples", 3)))
+    samples = [primary]
+    review_temperature = float(cfg.get("ai_review_temperature", 0.2))
+    instruction = (
+        "这是增强复核。请重新独立判断，不要默认前一次答案正确。"
+        "如果题干、选项或图片证据不足，请降低 confidence，并在 reason 中说明。"
+        "多选题必须返回完整选项集合；共用选项题必须按小题顺序返回。"
+    )
+    for sample_index in range(2, requested_samples + 1):
+        try:
+            samples.append(
+                request_ai_answers(
+                    cfg,
+                    headers,
+                    question_type,
+                    question_text,
+                    options_dict,
+                    media,
+                    label=f"enhanced-review-{sample_index}",
+                    instruction=instruction,
+                    temperature=review_temperature,
+                )
+            )
+        except (requests.RequestException, KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            LOGGER.warning("AI enhanced-review-%s failed: %s", sample_index, exc)
+
+    return combine_ai_review_samples(cfg, samples, question_type)
+
+
+def combine_ai_review_samples(
+    cfg: Dict[str, Any],
+    samples: List[AIAnswerResult],
+    question_type: str,
+) -> AIAnswerResult:
+    usable = [sample for sample in samples if sample.answers]
+    if not usable:
+        return AIAnswerResult([], None, True, "enhanced review produced no usable answers", attempts=len(samples))
+
+    grouped: Dict[Tuple[str, ...], List[AIAnswerResult]] = {}
+    for sample in usable:
+        key = tuple(sample.answers)
+        grouped.setdefault(key, []).append(sample)
+
+    top_key, top_group = max(grouped.items(), key=lambda item: (len(item[1]), average_confidence(item[1]) or -1.0))
+    consensus_ratio = len(top_group) / len(usable)
+    confidence = average_confidence(top_group)
+    accept_confidence = float(cfg.get("ai_accept_confidence", cfg.get("ai_min_confidence", 0.75)))
+    review_confidence = float(cfg.get("ai_review_confidence", 0.55))
+    required_consensus = float(cfg.get("ai_consensus_ratio", 0.66))
+    low_confidence_reasons = [sample.reason for sample in top_group if sample.low_confidence and sample.reason]
+
+    low_confidence = False
+    reason_parts: List[str] = []
+    if consensus_ratio < required_consensus:
+        low_confidence = True
+        reason_parts.append(f"consensus {consensus_ratio:.2f} < required {required_consensus:.2f}")
+    if confidence is None:
+        if cfg.get("ai_require_confidence"):
+            low_confidence = True
+            reason_parts.append("missing confidence after review")
+    elif confidence < review_confidence:
+        low_confidence = True
+        reason_parts.append(f"confidence {confidence:.2f} < review floor {review_confidence:.2f}")
+
+    accepted_with_risk = False
+    if not low_confidence and confidence is not None and confidence < accept_confidence:
+        accepted_with_risk = True
+        reason_parts.append(f"accepted by review with confidence {confidence:.2f} < {accept_confidence:.2f}")
+    if not reason_parts and low_confidence_reasons:
+        reason_parts.append("; ".join(low_confidence_reasons[:2]))
+
+    answers = list(top_key)
+    LOGGER.info(
+        "AI enhanced review summary type=%s answers=%s consensus=%.2f confidence=%s "
+        "attempts=%s accepted_with_risk=%s low_confidence=%s",
+        question_type,
+        answers,
+        consensus_ratio,
+        confidence,
+        len(usable),
+        accepted_with_risk,
+        low_confidence,
+    )
+    return AIAnswerResult(
+        answers,
+        confidence,
+        low_confidence,
+        "; ".join(reason_parts),
+        consensus_ratio=consensus_ratio,
+        attempts=len(usable),
+        review_required=True,
+        accepted_with_risk=accepted_with_risk,
+    )
+
+
+def average_confidence(samples: List[AIAnswerResult]) -> Optional[float]:
+    values = [sample.confidence for sample in samples if sample.confidence is not None]
+    if not values:
         return None
+    return sum(values) / len(values)
+
+
+def build_ai_user_content(user_payload: Dict[str, Any], media: List[QuestionMedia]) -> Any:
+    text = json.dumps(user_payload, ensure_ascii=False)
+    if not media:
+        return text
+
+    content: List[Dict[str, Any]] = [
+        {
+            "type": "text",
+            "text": (
+                text
+                + "\n\n这道题包含图片信息。请结合附带的题目截图判断题干和选项，"
+                "最终仍然严格只返回 JSON。"
+            ),
+        }
+    ]
+    for item in media:
+        content.append({"type": "image_url", "image_url": {"url": item.data_url}})
+    return content
+
+
+def normalize_ai_answers(answers: Any, question_type: str, options_dict: Dict[str, str]) -> List[str]:
+    if isinstance(answers, str):
+        if question_type == "text":
+            values = [answers]
+        else:
+            values = re.findall(r"[A-Z]", answers.upper())
+    elif isinstance(answers, list):
+        values = [str(item).strip() for item in answers if str(item).strip()]
+    elif isinstance(answers, dict):
+        values = [
+            str(answers[key]).strip()
+            for key in sorted(answers, key=lambda item: int(item) if str(item).isdigit() else str(item))
+            if str(answers[key]).strip()
+        ]
+    else:
+        raise ValueError("AI response JSON does not contain a string/list field named 'answer'")
+
+    if question_type == "text":
+        return [value.strip() for value in values if value.strip()]
+
+    allowed_order = list(options_dict.keys())
+    allowed = set(allowed_order)
+    if question_type == "shared_options":
+        return [value.strip().upper() for value in values if value.strip().upper() in allowed]
+
+    seen = set()
+    normalized: List[str] = []
+    for value in values:
+        letter = value.strip().upper()
+        if letter not in allowed or letter in seen:
+            continue
+        seen.add(letter)
+        normalized.append(letter)
+    return sorted(normalized, key=allowed_order.index)
+
+
+def parse_ai_confidence(parsed: Dict[str, Any]) -> Optional[float]:
+    raw_value = parsed.get("confidence", parsed.get("confidence_score"))
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, (int, float)):
+        value = float(raw_value)
+    elif isinstance(raw_value, str):
+        normalized = raw_value.strip().lower()
+        label_map = {"high": 0.9, "medium": 0.6, "low": 0.3, "高": 0.9, "中": 0.6, "低": 0.3}
+        if normalized in label_map:
+            return label_map[normalized]
+        percent_match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*%", normalized)
+        if percent_match:
+            value = float(percent_match.group(1)) / 100
+        else:
+            value = float(normalized)
+    else:
+        return None
+
+    if value > 1 and value <= 100:
+        value = value / 100
+    return max(0.0, min(1.0, value))
+
+
+def parse_boolish(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "low", "uncertain", "不确定"}
+    return False
+
+
+def evaluate_ai_confidence(
+    cfg: Dict[str, Any],
+    parsed: Dict[str, Any],
+    confidence: Optional[float],
+) -> Tuple[bool, str]:
+    if parse_boolish(parsed.get("low_confidence")) or parse_boolish(parsed.get("uncertain")):
+        return True, str(parsed.get("reason") or "model marked answer uncertain")
+
+    min_confidence = float(cfg.get("ai_accept_confidence", cfg.get("ai_min_confidence", 0.75)))
+    if confidence is None:
+        if cfg.get("ai_require_confidence"):
+            return True, "missing confidence"
+        return False, ""
+
+    if confidence < min_confidence:
+        return True, f"confidence {confidence:.2f} < threshold {min_confidence:.2f}"
+    return False, str(parsed.get("reason") or "")
 
 
 class AssignmentAutoTester:
@@ -228,6 +697,11 @@ class AssignmentAutoTester:
         self.config = config
         self.page: Optional[Page] = None
         self._dialog_auto_accept_page: Optional[Page] = None
+        self.halt_requested = False
+        self.halt_reason = ""
+        self._halt_pause_handled = False
+        self.completed_assignments = 0
+        self.assignment_risks: List[Dict[str, Any]] = []
         self.browser = None
         self.context = None
 
@@ -386,11 +860,7 @@ class AssignmentAutoTester:
     def login(self) -> bool:
         if not self.page:
             return False
-        try:
-            self.page.goto(self.config["login_url"], wait_until="domcontentloaded")
-            LOGGER.info("Opened login page")
-        except PlaywrightError as exc:
-            LOGGER.error("Open login page failed: %s", exc)
+        if not self.goto_with_retries(self.config["login_url"], "login page"):
             return False
 
         if not self.safe_fill(self.selectors["username_input"], self.config["username"], "username"):
@@ -405,6 +875,26 @@ class AssignmentAutoTester:
             LOGGER.info("Login did not visibly reach i.chaoxing.com before timeout; continuing with explicit Inbox navigation.")
         self.wait_for_page_settle("after login")
         return True
+
+    def goto_with_retries(self, url: str, description: str) -> bool:
+        if not self.page:
+            return False
+        attempts = max(1, int(self.config.get("navigation_retries", 2)) + 1)
+        retry_delay = max(0.0, float(self.config.get("navigation_retry_delay_seconds", 3.0)))
+        last_error = ""
+        for attempt in range(1, attempts + 1):
+            try:
+                self.page.goto(url, wait_until="domcontentloaded")
+                LOGGER.info("Opened %s", description)
+                return True
+            except PlaywrightError as exc:
+                last_error = str(exc)
+                LOGGER.warning("Open %s attempt %s/%s failed: %s", description, attempt, attempts, exc)
+                if attempt >= attempts:
+                    break
+                self.page.wait_for_timeout(int(retry_delay * attempt * 1000))
+        LOGGER.error("Open %s failed after %s attempt(s): %s", description, attempts, last_error)
+        return False
 
     def open_inbox(self) -> bool:
         if not self.page:
@@ -428,7 +918,11 @@ class AssignmentAutoTester:
                         if inbox_nav:
                             self.safe_click(inbox_nav, "inbox navigation entry")
                             self.wait_for_page_settle("inbox navigation entry")
-                    self.find_locator(self.selectors["inbox_loaded"], timeout_ms=8_000, log_missing=False)
+                    notice_url = self.extract_menu_data_url("收件箱")
+                    if notice_url and notice_url.startswith("http") and "notice.chaoxing.com" in notice_url:
+                        self.page.goto(notice_url, wait_until="domcontentloaded")
+                        self.wait_for_page_settle("notice inbox direct url")
+                    self.find_locator(self.selectors["inbox_loaded"], timeout_ms=15_000, log_missing=False)
                     LOGGER.info("Opened inbox via forced URL: %s", self.config["inbox_url"])
                     return True
                 except PlaywrightError as exc:
@@ -438,6 +932,30 @@ class AssignmentAutoTester:
             LOGGER.warning("Forced inbox URL failed: %s", exc)
             return False
         return False
+
+    def extract_menu_data_url(self, name: str) -> str:
+        if not self.page:
+            return ""
+        try:
+            value = self.page.evaluate(
+                """(name) => {
+                    const candidates = Array.from(document.querySelectorAll("[dataurl], [data-url], [onclick]"));
+                    const target = candidates.find((element) => {
+                        const text = element.getAttribute("name") || element.innerText || element.textContent || "";
+                        return text.includes(name);
+                    });
+                    if (!target) return "";
+                    const direct = target.getAttribute("dataurl") || target.getAttribute("data-url") || "";
+                    if (direct) return direct;
+                    const onclick = target.getAttribute("onclick") || "";
+                    const match = onclick.match(/'(https?:[^']+)'/);
+                    return match ? match[1] : "";
+                }""",
+                name,
+            )
+            return value if isinstance(value, str) else ""
+        except PlaywrightError:
+            return ""
 
     def scan_inbox(self) -> List[Dict[str, str]]:
         """Scan Inbox only. Does not leave the Inbox path or submit real work."""
@@ -461,7 +979,12 @@ class AssignmentAutoTester:
             href = ""
             try:
                 open_notice = item.locator(self.selectors["inbox_item_open"]).first
-                href = open_notice.get_attribute("data-url") or title.get_attribute("href") or ""
+                href = (
+                    open_notice.get_attribute("data-url")
+                    or open_notice.get_attribute("dataurl")
+                    or title.get_attribute("href")
+                    or ""
+                )
             except (PlaywrightTimeoutError, PlaywrightError):
                 href = ""
             if href.strip() in {"", "#"} or href.lower().startswith("javascript:"):
@@ -483,6 +1006,8 @@ class AssignmentAutoTester:
 
     def is_inbox_candidate(self, text: str) -> bool:
         normalized = re.sub(r"\s+", "", text)
+        if any(keyword in normalized for keyword in self.config.get("inbox_exclude_keywords", [])):
+            return False
         return any(keyword in normalized for keyword in self.config["inbox_keywords"])
 
     def process_inbox_candidate(self, candidate: Dict[str, str]) -> bool:
@@ -491,6 +1016,7 @@ class AssignmentAutoTester:
 
         href = candidate.get("href", "")
         inbox_url = self.page.url
+        self.assignment_risks = []
         LOGGER.info("开始处理 Inbox 作业候选: %s", time.strftime("%Y-%m-%d %H:%M:%S"))
         if not href:
             if not self.click_inbox_candidate_by_index(candidate.get("index", "")):
@@ -519,6 +1045,9 @@ class AssignmentAutoTester:
 
         result = self.process_all_questions(first_extracted=extracted)
         LOGGER.info("完成做题 dry-run: %s result=%s", time.strftime("%Y-%m-%d %H:%M:%S"), result)
+        if self.halt_requested:
+            self.pause_for_low_confidence_halt()
+            return result
         try:
             self.page.goto(inbox_url, wait_until="domcontentloaded")
             self.wait_for_page_settle("return to inbox")
@@ -621,14 +1150,16 @@ class AssignmentAutoTester:
         if not self.page:
             return []
 
+        cap = int(self.config.get("max_questions", 120))
+        probe_limit = cap + 1 if cap > 0 else None
         for selector in [".questionLi", ".question", ".question-item", "[data-question-id]", ".exam-question"]:
             containers = self.find_all_locators(selector, timeout_ms=4_000)
             if containers:
-                return containers[: self.config["max_questions"]]
+                return containers[:probe_limit] if probe_limit else containers
         current = self.current_question_container()
         return [current] if current else []
 
-    def extract_question(self) -> Optional[Tuple[str, Dict[str, str], str, Dict[str, Locator]]]:
+    def extract_question(self) -> Optional[QuestionData]:
         container = self.current_question_container()
         if not container:
             return None
@@ -637,7 +1168,8 @@ class AssignmentAutoTester:
     def extract_question_from_container(
         self,
         container: Locator,
-    ) -> Optional[Tuple[str, Dict[str, str], str, Dict[str, Locator]]]:
+    ) -> Optional[QuestionData]:
+        media = self.capture_question_media(container)
         try:
             question_text = container.locator(self.selectors["question_text"]).first.inner_text(timeout=2_000).strip()
         except (PlaywrightTimeoutError, PlaywrightError) as exc:
@@ -647,13 +1179,26 @@ class AssignmentAutoTester:
                 LOGGER.warning("Question extraction failed: %s / %s", exc, inner_exc)
                 return None
 
+        shared_question = self.extract_shared_option_question(container, question_text, media)
+        if shared_question:
+            return shared_question
+
         option_items = container.locator(self.selectors["option_item"]).all()
         if not option_items:
             text_control = self.find_text_answer_control(container)
             if text_control:
                 LOGGER.info("[探测到简答题] found text input control")
-                return question_text, {}, "text", {"__text__": text_control}
+                return QuestionData(question_text, {}, "text", {"__text__": text_control}, media)
             option_items = self.find_all_locators(self.selectors["option_item"], timeout_ms=3_000)
+
+        max_options = int(self.config.get("max_options_per_question", 12))
+        if len(option_items) > max_options:
+            LOGGER.warning(
+                "Question option extraction produced too many candidates; treating as unanswerable. count=%s max=%s",
+                len(option_items),
+                max_options,
+            )
+            return None
 
         options: Dict[str, str] = {}
         controls: Dict[str, Locator] = {}
@@ -684,8 +1229,124 @@ class AssignmentAutoTester:
         if not question_text or not options:
             LOGGER.warning("Incomplete question data; skipping")
             return None
-        LOGGER.info("Extracted %s question with options=%s", question_type, list(options.keys()))
-        return question_text, options, question_type, controls
+        LOGGER.info("Extracted %s question with options=%s media=%s", question_type, list(options.keys()), len(media))
+        return QuestionData(question_text, options, question_type, controls, media)
+
+    def extract_shared_option_question(
+        self,
+        container: Locator,
+        question_text: str,
+        media: List[QuestionMedia],
+    ) -> Optional[QuestionData]:
+        try:
+            shared_groups = container.locator(".B-answer-ct").all()
+            if not shared_groups:
+                return None
+            option_rows = container.locator(".stem_answer .clearfix").all()
+            if not option_rows:
+                return None
+        except PlaywrightError:
+            return None
+
+        options: Dict[str, str] = {}
+        for row in option_rows:
+            try:
+                text = re.sub(r"\s+", " ", row.inner_text(timeout=1_000)).strip()
+            except (PlaywrightTimeoutError, PlaywrightError):
+                continue
+            match = re.match(r"^([A-Z])\s*[.．、:：]?\s*(.+)$", text)
+            if match:
+                options[match.group(1)] = match.group(2).strip()
+
+        controls: Dict[str, Locator] = {}
+        sub_questions: List[str] = []
+        allowed = set(options.keys())
+        for group_index, group in enumerate(shared_groups, start=1):
+            try:
+                group_text = re.sub(r"\s+", " ", group.inner_text(timeout=1_000)).strip()
+            except (PlaywrightTimeoutError, PlaywrightError):
+                group_text = f"({group_index})"
+            sub_question_text = re.sub(r"\s+[A-Z](?:\s+[A-Z])*\s*$", "", group_text).strip()
+            sub_questions.append(sub_question_text or f"({group_index})")
+
+            try:
+                spans = group.locator(".B-answerCon span").all()
+            except PlaywrightError:
+                spans = []
+            for span in spans:
+                try:
+                    letter = span.inner_text(timeout=1_000).strip().upper()
+                except (PlaywrightTimeoutError, PlaywrightError):
+                    continue
+                if letter in allowed:
+                    controls[f"{group_index}:{letter}"] = span
+
+        if not options or not sub_questions:
+            return None
+        expected_controls = len(options) * len(sub_questions)
+        if len(controls) < expected_controls:
+            LOGGER.warning(
+                "Shared-option question controls incomplete; options=%s sub_questions=%s controls=%s",
+                len(options),
+                len(sub_questions),
+                len(controls),
+            )
+            return None
+
+        prompt_text = (
+            question_text
+            + "\n共用备选项："
+            + json.dumps(options, ensure_ascii=False)
+            + "\n小题："
+            + json.dumps(sub_questions, ensure_ascii=False)
+        )
+        LOGGER.info(
+            "Extracted shared_options question with options=%s sub_questions=%s media=%s",
+            list(options.keys()),
+            len(sub_questions),
+            len(media),
+        )
+        return QuestionData(prompt_text, options, "shared_options", controls, media, sub_questions)
+
+    def capture_question_media(self, container: Locator) -> List[QuestionMedia]:
+        if not self.config.get("ai_enable_images"):
+            return []
+        if int(self.config.get("ai_max_images_per_question", 1)) <= 0:
+            return []
+
+        try:
+            media_nodes = container.locator(self.selectors["question_media"]).count()
+        except PlaywrightError:
+            media_nodes = 0
+        if media_nodes <= 0:
+            return []
+
+        try:
+            png_bytes = container.screenshot(
+                type="png",
+                timeout=max(1_000, int(self.config.get("action_timeout_ms", 5_000))),
+            )
+        except (PlaywrightTimeoutError, PlaywrightError) as exc:
+            LOGGER.warning("Question media screenshot failed; falling back to text-only. reason=%s", exc)
+            return []
+
+        max_bytes = int(self.config.get("ai_max_image_bytes", 1_500_000))
+        if len(png_bytes) > max_bytes:
+            LOGGER.warning(
+                "Question media screenshot too large; falling back to text-only. bytes=%s max=%s media_nodes=%s",
+                len(png_bytes),
+                max_bytes,
+                media_nodes,
+            )
+            return []
+
+        data_url = "data:image/png;base64," + base64.b64encode(png_bytes).decode("ascii")
+        LOGGER.info(
+            "Question media captured: media_nodes=%s screenshot_bytes=%s source=question-container",
+            media_nodes,
+            len(png_bytes),
+        )
+        return [QuestionMedia("question-container", data_url, len(png_bytes), "screenshot")]
 
     def find_text_answer_control(self, container: Locator) -> Optional[Locator]:
         try:
@@ -787,12 +1448,46 @@ class AssignmentAutoTester:
 
         return self.submit_current_page()
 
+    def guard_risk_budget_before_submit(self) -> bool:
+        if not self.config.get("submit_within_risk_budget", True):
+            return True
+        total_risk = sum(float(item.get("risk_points", 0.0)) for item in self.assignment_risks)
+        risk_budget = float(self.config.get("risk_budget_points", 5.0))
+        if self.assignment_risks:
+            risk_summary = "; ".join(
+                (
+                    f"#{item.get('index') or '?'}:{item.get('question_type')} "
+                    f"risk={float(item.get('risk_points', 0.0)):.2f} "
+                    f"conf={item.get('confidence')} consensus={float(item.get('consensus_ratio', 0.0)):.2f} "
+                    f"answer={'/'.join(item.get('answers') or [])}"
+                )
+                for item in self.assignment_risks
+            )
+            LOGGER.warning(
+                "Pre-submit risk summary: total_risk=%.2f budget=%.2f items=%s",
+                total_risk,
+                risk_budget,
+                risk_summary,
+            )
+        else:
+            LOGGER.info("Pre-submit risk summary: no accepted low-confidence risk items.")
+
+        if total_risk > risk_budget:
+            self.request_manual_halt(
+                f"提交前风险预算超限：estimated_risk={total_risk:.2f} > budget={risk_budget:.2f}。"
+            )
+            return False
+        return True
+
     def submit_current_page(self) -> bool:
         if not self.page:
             raise RuntimeError("Cannot submit without an initialized page.")
         if not self.actions_allowed() or not self.config["allow_submission"]:
             LOGGER.info("Dry-run: would click submit")
             return True
+        if not self.guard_risk_budget_before_submit():
+            self.pause_for_low_confidence_halt()
+            return False
 
         LOGGER.info("[Action] 正在定位提交按钮...")
         submit_button = self.find_locator(
@@ -816,6 +1511,8 @@ class AssignmentAutoTester:
             self.page.wait_for_timeout(max(0, int(self.config.get("submit_after_click_wait_ms", 500))))
             LOGGER.info("[Action] 提交动作已完成，等待页面稳定...")
             self.wait_for_page_settle("submit")
+            self.completed_assignments += 1
+            self.inspect_score_after_submit()
             return True
         except (PlaywrightTimeoutError, PlaywrightError) as exc:
             raise RuntimeError(f"Submit action failed: {exc}") from exc
@@ -910,28 +1607,36 @@ class AssignmentAutoTester:
 
     def process_current_question(
         self,
-        extracted: Optional[Tuple[str, Dict[str, str], str, Dict[str, Locator]]] = None,
+        extracted: Optional[QuestionData] = None,
     ) -> bool:
         extracted = extracted or self.extract_question()
         if not extracted:
             return False
 
-        question_text, options, question_type, controls = extracted
+        question_text = extracted.text
+        options = extracted.options
+        question_type = extracted.question_type
+        controls = extracted.controls
         LOGGER.info("Question type=%s text=%s", question_type, question_text[:80])
-        answers = self.decide_answers(question_text, options, question_type)
+        answers = self.decide_answers(question_text, options, question_type, extracted.media, question_index=None)
         if not answers:
             LOGGER.warning("No usable AI answer; skipping question")
+            if self.halt_requested:
+                return self.pause_for_low_confidence_halt()
             return self.click_next_or_submit()
 
         if question_type == "text":
             self.apply_text_answer(answers[0], controls)
+        elif question_type == "shared_options":
+            self.apply_shared_option_answers(answers, controls, len(extracted.sub_questions or []))
         else:
             self.apply_answers(answers, controls)
+        LOGGER.info("Question final answer type=%s answer=%s", question_type, answers)
         return self.click_next_or_submit()
 
     def process_all_questions(
         self,
-        first_extracted: Optional[Tuple[str, Dict[str, str], str, Dict[str, Locator]]] = None,
+        first_extracted: Optional[QuestionData] = None,
     ) -> bool:
         containers = self.all_question_containers()
         if not containers:
@@ -941,6 +1646,8 @@ class AssignmentAutoTester:
 
         processed = 0
         selected = 0
+        answer_summary: List[Tuple[int, str, List[str], bool]] = []
+        capped_by_max_questions = False
         if first_extracted and not containers:
             containers_to_process: List[Optional[Locator]] = [None]
         else:
@@ -949,31 +1656,67 @@ class AssignmentAutoTester:
         for index, container in enumerate(containers_to_process, start=1):
             if index > self.config["max_questions"]:
                 LOGGER.info("Reached max_questions=%s; stopping question loop.", self.config["max_questions"])
+                capped_by_max_questions = True
                 break
 
             extracted = first_extracted if container is None else self.extract_question_from_container(container)
             first_extracted = None
             if not extracted:
                 LOGGER.warning("Question #%s extraction failed; skipping.", index)
+                if self.config.get("stop_on_unanswerable"):
+                    self.request_manual_halt(f"第 {index} 题题目提取失败，已停止以避免漏答提交。")
+                    self.pause_for_low_confidence_halt()
+                    return False
                 continue
 
-            question_text, options, question_type, controls = extracted
+            question_text = extracted.text
+            options = extracted.options
+            question_type = extracted.question_type
+            controls = extracted.controls
             processed += 1
             LOGGER.info("Question #%s type=%s text=%s", index, question_type, question_text[:80])
-            answers = self.decide_answers(question_text, options, question_type)
+            answers = self.decide_answers(
+                question_text,
+                options,
+                question_type,
+                extracted.media,
+                question_index=index,
+            )
             if not answers:
                 LOGGER.warning("Question #%s has no usable answer; skipping.", index)
+                if self.halt_requested:
+                    self.pause_for_low_confidence_halt()
+                    return False
+                if self.config.get("stop_on_unanswerable"):
+                    self.request_manual_halt(f"第 {index} 题没有可用答案，已停止以避免漏答提交。")
+                    self.pause_for_low_confidence_halt()
+                    return False
                 continue
             if question_type == "text":
                 applied = self.apply_text_answer(answers[0], controls)
+            elif question_type == "shared_options":
+                applied = self.apply_shared_option_answers(answers, controls, len(extracted.sub_questions or []))
             else:
                 applied = self.apply_answers(answers, controls)
+            answer_summary.append((index, question_type, answers, applied))
             if applied:
                 selected += 1
 
         LOGGER.info("Processed %s question(s); selected/mapped %s question(s).", processed, selected)
+        if answer_summary:
+            summary_text = "; ".join(
+                f"#{index}:{question_type}:{'/'.join(answers)}:{'applied' if applied else 'not-applied'}"
+                for index, question_type, answers, applied in answer_summary
+            )
+            LOGGER.info("Answer summary before next/submit: %s", summary_text)
         if selected < processed:
             LOGGER.warning("Question loop incomplete: processed=%s selected_or_mapped=%s", processed, selected)
+            if self.config.get("stop_on_unanswerable"):
+                self.request_manual_halt(
+                    f"检测到漏答或未成功映射：processed={processed} selected_or_mapped={selected}，已停止提交。"
+                )
+                self.pause_for_low_confidence_halt()
+                return False
             if self.config.get("block_on_incomplete"):
                 print("\n" + "=" * 60)
                 print("检测到漏答，已按 ASSIGNMENT_BLOCK_ON_INCOMPLETE=true 暂停。")
@@ -981,13 +1724,33 @@ class AssignmentAutoTester:
                 print("=" * 60 + "\n")
                 time.sleep(max(0, int(self.config.get("incomplete_block_seconds", 7200))))
                 return False
+        if capped_by_max_questions:
+            self.request_manual_halt(
+                f"题目数量超过 ASSIGNMENT_MAX_QUESTIONS={self.config['max_questions']}，已停止提交以避免漏答。"
+            )
+            self.pause_for_low_confidence_halt()
+            return False
         if processed == 0:
             return False
         return self.click_next_or_submit()
 
-    def decide_answers(self, question_text: str, options: Dict[str, str], question_type: str) -> Optional[List[str]]:
+    def decide_answers(
+        self,
+        question_text: str,
+        options: Dict[str, str],
+        question_type: str,
+        media: Optional[List[QuestionMedia]] = None,
+        question_index: Optional[int] = None,
+    ) -> Optional[List[str]]:
         if self.live_ai_allowed():
-            return ask_ai_brain(question_text, options, question_type, self.config)
+            decision = ask_ai_brain_decision(question_text, options, question_type, self.config, media)
+            if not decision:
+                return None
+            self.record_ai_decision_risk(question_index, question_text, question_type, decision)
+            if decision.low_confidence and self.config.get("stop_on_low_confidence"):
+                self.request_low_confidence_halt(decision, question_text)
+                return None
+            return decision.answers
 
         first_option = next(iter(options), None)
         if question_type == "text":
@@ -1004,6 +1767,163 @@ class AssignmentAutoTester:
             )
             return [first_option]
         return None
+
+    def record_ai_decision_risk(
+        self,
+        question_index: Optional[int],
+        question_text: str,
+        question_type: str,
+        decision: AIAnswerResult,
+    ) -> None:
+        if not decision.review_required and not decision.accepted_with_risk:
+            return
+        if decision.low_confidence:
+            return
+        if not decision.accepted_with_risk:
+            return
+
+        points = self.estimate_question_points(question_text)
+        decision.risk_points = points
+        risk_item = {
+            "index": question_index,
+            "question_type": question_type,
+            "answers": decision.answers,
+            "confidence": decision.confidence,
+            "consensus_ratio": decision.consensus_ratio,
+            "risk_points": points,
+            "reason": decision.reason,
+            "question": re.sub(r"\s+", " ", question_text).strip()[:120],
+        }
+        self.assignment_risks.append(risk_item)
+        LOGGER.warning(
+            "Risk accepted for question #%s: points=%.2f confidence=%s consensus=%.2f answer=%s reason=%s",
+            question_index if question_index is not None else "?",
+            points,
+            decision.confidence,
+            decision.consensus_ratio,
+            decision.answers,
+            decision.reason,
+        )
+
+    def estimate_question_points(self, question_text: str) -> float:
+        match = re.search(r"(\d+(?:\.\d+)?)\s*分", question_text)
+        if match:
+            try:
+                return float(match.group(1))
+            except ValueError:
+                pass
+        return 1.0
+
+    def apply_shared_option_answers(
+        self,
+        answers: List[str],
+        controls: Dict[str, Locator],
+        sub_question_count: int,
+    ) -> bool:
+        if sub_question_count <= 0:
+            LOGGER.warning("Shared-option question has no sub-question count; skipping.")
+            return False
+        if len(answers) != sub_question_count:
+            LOGGER.warning(
+                "Shared-option answer count mismatch: answers=%s expected=%s",
+                answers,
+                sub_question_count,
+            )
+            return False
+
+        applied = 0
+        for index, answer in enumerate(answers, start=1):
+            letter = str(answer).strip().upper()
+            control = controls.get(f"{index}:{letter}")
+            if not control:
+                LOGGER.warning("No shared-option control for sub-question %s answer %s", index, letter)
+                continue
+            if self.safe_click(control, f"shared-option #{index} answer {letter}"):
+                applied += 1
+        return applied == sub_question_count
+
+    def request_low_confidence_halt(self, decision: AIAnswerResult, question_text: str) -> None:
+        self.halt_requested = True
+        question_preview = re.sub(r"\s+", " ", question_text).strip()[:120]
+        self.halt_reason = (
+            f"低置信度答案，已停止自动提交。answer={decision.answers} "
+            f"confidence={decision.confidence} consensus={decision.consensus_ratio:.2f} "
+            f"attempts={decision.attempts} reason={decision.reason or '<none>'} question={question_preview}"
+        )
+        LOGGER.warning(self.halt_reason)
+
+    def request_manual_halt(self, reason: str) -> None:
+        self.halt_requested = True
+        self.halt_reason = reason
+        LOGGER.warning(reason)
+
+    def request_low_score_halt(self, score: float, total: float, text_snippet: str) -> None:
+        threshold = float(self.config.get("min_acceptable_score", 80.0))
+        self.halt_requested = True
+        self.halt_reason = (
+            f"提交后检测到成绩偏低，已停止继续扫描。score={score:g}/{total:g} "
+            f"threshold={threshold:g} page_text={text_snippet}"
+        )
+        LOGGER.warning(self.halt_reason)
+
+    def inspect_score_after_submit(self) -> None:
+        if not self.page or not self.config.get("stop_on_low_score"):
+            return
+        score_info = self.extract_score_info()
+        if not score_info:
+            LOGGER.info("No score detected after submit; continuing.")
+            return
+        score, total, snippet = score_info
+        percent_score = score / total * 100 if total > 0 else score
+        LOGGER.info("Detected assignment score: %s/%s (%.1f%%)", score, total, percent_score)
+        if percent_score < float(self.config.get("min_acceptable_score", 80.0)):
+            self.request_low_score_halt(score, total, snippet)
+
+    def extract_score_info(self) -> Optional[Tuple[float, float, str]]:
+        if not self.page:
+            return None
+        roots = [self.page, *self.page.frames]
+        for root in roots:
+            try:
+                body_text = root.locator("body").inner_text(timeout=2_000)
+            except (PlaywrightTimeoutError, PlaywrightError):
+                continue
+            normalized = re.sub(r"\s+", " ", body_text).strip()
+            score = self.parse_score_text(normalized)
+            if score:
+                snippet = normalized[:200]
+                return score[0], score[1], snippet
+        return None
+
+    def parse_score_text(self, text: str) -> Optional[Tuple[float, float]]:
+        patterns = [
+            r"(?:成绩|得分|分数|score)[:：]?\s*(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)",
+            r"(?:成绩|得分|分数|score)[:：]?\s*(\d+(?:\.\d+)?)\s*分",
+            r"(?:总分|满分)[:：]?\s*(\d+(?:\.\d+)?).*?(?:得分|成绩|分数)[:：]?\s*(\d+(?:\.\d+)?)",
+            r"(?:得分|成绩|分数)[:：]?\s*(\d+(?:\.\d+)?).*?(?:总分|满分)[:：]?\s*(\d+(?:\.\d+)?)",
+        ]
+        for index, pattern in enumerate(patterns):
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if not match:
+                continue
+            first = float(match.group(1))
+            second = float(match.group(2)) if len(match.groups()) >= 2 else 100.0
+            if index == 2:
+                return second, first
+            return first, second
+        return None
+
+    def pause_for_low_confidence_halt(self) -> bool:
+        if self._halt_pause_handled:
+            return False
+        self._halt_pause_handled = True
+        print("\n" + "=" * 72)
+        print("检测到需要人工检查的情况，已停止继续答题或提交。")
+        print(self.halt_reason or "请手动检查当前页面答案。")
+        print("=" * 72 + "\n")
+        if self.config.get("hold_browser_on_low_confidence") and not self.config.get("headless"):
+            input("浏览器已暂停在当前页面。检查完后按回车结束程序...")
+        return False
 
     def live_ai_allowed(self) -> bool:
         if not self.page:
@@ -1057,17 +1977,18 @@ class AssignmentAutoTester:
                     )
                 for candidate in candidates_to_process:
                     self.process_inbox_candidate(candidate)
-                # ... 前面的代码不变 ...
+                    if self.halt_requested:
+                        LOGGER.warning("Monitor stopped because low-confidence halt was requested: %s", self.halt_reason)
+                        return
                 LOGGER.info("Monitor scan round %s completed at %s", rounds_completed, time.strftime("%Y-%m-%d %H:%M:%S"))
 
                 max_rounds = self.config.get("max_scan_rounds", 0)
                 if max_rounds and rounds_completed >= max_rounds:
                     LOGGER.info("Reached max_scan_rounds=%s; exiting monitor.", max_rounds)
-                    
-                    # 👉 核心拦截逻辑加在这里：在退出(return)前拦住它！
+
                     if self.config.get("hold_browser_on_exit") and not self.config.get("allow_submission"):
                         print("\n" + "="*50)
-                        print("👉 答题已完成，浏览器已悬停！")
+                        print("答题已完成，浏览器已悬停。")
                         print("请在网页上手动检查 AI 填写的答案。")
                         print("确认无误后，请自己点击网页上的【提交作业】按钮。")
                         print("="*50 + "\n")
@@ -1084,7 +2005,6 @@ class AssignmentAutoTester:
         except Exception as exc:
             LOGGER.exception("Unexpected monitor error: %s", exc)
         finally:
-            # 只有你按了回车，程序才会走到这里关掉浏览器
             self.close()
 
 if __name__ == "__main__":

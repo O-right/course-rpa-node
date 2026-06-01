@@ -125,3 +125,43 @@ Reason: The project now needs durable off-machine source backup and handoff. Run
 Decision: Treat `api.2070814.xyz` as healthy only when both `/v1/models` and an authenticated `/v1/chat/completions` smoke pass. Service uptime or Cloudflare Tunnel reachability alone is insufficient.
 
 Reason: The current `glm/chat2api` check showed `chat2api.service` and `cloudflared-api-tunnel.service` running and `/v1/models` returning 200, while authenticated chat completions returned 500 because `chat2api` had no valid token and was falling back to a no-auth ChatGPT path that hit `Unusual activity` / proxy errors.
+
+## 2026-06-01: Assignment AI Decisions Are Audited And Multi-Select Reviewed
+
+Decision: During the temporary assignment experiment phase, `assignment_tester.py` logs raw AI response content, normalized answers, and a pre-submit answer summary. Multiple-choice questions receive a second AI review pass by default through `ASSIGNMENT_AI_REVIEW_MULTIPLE=true`; callers can disable raw response logging with `ASSIGNMENT_AI_LOG_RAW_RESPONSE=false`.
+
+Reason: A real authorized experiment submitted `作业:《思想道德与法治》2023版第五章第一节` and scored 90/100 because one multiple-choice question selected `ABC` while the correct answer was `ABCD`. A second deterministic review pass makes this class of miss easier to catch, and the logs make future failures attributable to extraction, model output, normalization, or clicking.
+
+## 2026-06-01: Image Questions Use Browser Screenshots
+
+Decision: For assignment questions containing images, SVGs, canvases, or CSS background images, `assignment_tester.py` captures the rendered question container as an in-memory PNG and sends it to the AI as a `data:image/png;base64,...` multimodal `image_url` part. It does not pass private Chaoxing image URLs directly to the remote API.
+
+Reason: Chaoxing media URLs can depend on browser cookies, referers, temporary tokens, or same-origin state that the remote `glm/chat2api` service does not have. A Playwright screenshot captures what the logged-in browser actually sees and avoids persisting image artifacts to the repository.
+
+## 2026-06-01: Low-Confidence Assignment Answers Halt Before Submit
+
+Decision: `assignment_tester.py` asks the AI to return a `confidence` field, treats missing confidence as low confidence by default, and stops before next/submit when confidence is below `ASSIGNMENT_AI_MIN_CONFIDENCE` or the model marks the answer uncertain. The default threshold is `0.75`, controlled by `ASSIGNMENT_STOP_ON_LOW_CONFIDENCE`, `ASSIGNMENT_AI_REQUIRE_CONFIDENCE`, and `ASSIGNMENT_HOLD_BROWSER_ON_LOW_CONFIDENCE`.
+
+Reason: During temporary authorized assignment experiments, a low-confidence model answer can turn into a poor score if the automation blindly submits. A conservative halt keeps the browser on the current page for manual inspection instead of continuing with weak evidence.
+
+## 2026-06-01: Guarded Assignment Runs Stop On Unanswerable Or Low Score
+
+Decision: Real assignment experiment runs stop before submit when a question cannot be extracted, no usable answer is available, or not all processed questions are selected/mapped. After submit, result pages are scanned for score text such as `90/100` or `得分：90分`; scores below `ASSIGNMENT_MIN_ACCEPTABLE_SCORE` stop further scanning. Defaults are `ASSIGNMENT_STOP_ON_UNANSWERABLE=true`, `ASSIGNMENT_STOP_ON_LOW_SCORE=true`, and `ASSIGNMENT_MIN_ACCEPTABLE_SCORE=80`.
+
+Reason: The current goal is not just to answer quickly, but to avoid continuing after weak evidence, broken extraction, or a poor observed score.
+
+Consequence: Malformed question extraction is also guarded by `ASSIGNMENT_MAX_OPTIONS_PER_QUESTION` so a broken container cannot produce hundreds of synthetic option letters and continue toward submit.
+
+## 2026-06-01: Chaoxing Shared-Option Questions Are Structured
+
+Decision: Treat Chaoxing `共用选项题` as `shared_options`: extract the shared A-E option block from `.stem_answer`, extract each sub-question from `.B-answer-ct`, and click the per-sub-question `.B-answerCon span` matching the ordered AI answer list. Shared-option answers preserve list order and do not de-duplicate or alphabetically sort.
+
+Reason: The previous generic option extractor flattened shared-option DOM into malformed option lists. Screenshot/vision can help with visual recognition, but this question type still requires structured control mapping so each sub-question receives its own A-E selection.
+
+## 2026-06-01: Assignment AI Uses Review Consensus And Risk Budget
+
+Decision: `assignment_tester.py` now treats `ASSIGNMENT_AI_MIN_CONFIDENCE` / `ASSIGNMENT_AI_ACCEPT_CONFIDENCE` as the high-confidence acceptance line, sends medium-confidence answers through enhanced review, records accepted medium-confidence answers against an estimated point-risk budget before submit, retries transient AI request failures, and retries flaky login-page navigation. Defaults are `ASSIGNMENT_AI_ENHANCED_REVIEW=true`, `ASSIGNMENT_AI_REVIEW_SAMPLES=3`, `ASSIGNMENT_AI_REVIEW_CONFIDENCE=0.55`, `ASSIGNMENT_AI_CONSENSUS_RATIO=0.66`, `ASSIGNMENT_RISK_BUDGET_POINTS=5`, `ASSIGNMENT_SUBMIT_WITHIN_RISK_BUDGET=true`, `ASSIGNMENT_AI_REQUEST_RETRIES=2`, and `ASSIGNMENT_NAVIGATION_RETRIES=2`.
+
+Reason: A single self-reported confidence threshold stopped the latest live run at a recoverable medium-confidence question. Lowering the threshold globally would risk poor submissions, so the runner now uses repeated review and a pre-submit risk budget to continue through stable medium-confidence answers while still stopping on unstable, very low-confidence, unanswerable, or over-budget cases.
+
+Consequence: `ASSIGNMENT_MAX_QUESTIONS` now defaults to 120, and hitting that cap is treated as an incomplete run that stops before submit instead of submitting a partially processed page.
