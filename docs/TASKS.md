@@ -70,6 +70,7 @@
 - [x] Add failure screenshots for course watcher errors.
 - [x] Verify course watcher syntax, config parsing, and local next-section URL-change smoke test.
 - [x] Verify course watcher CLI help, argument forwarding through `run_chaoxing.ps1`, config override parsing, and conflicting `--headless --headed` rejection.
+- [x] Fix `“四史”专题课` course lookup so quote variants and `专题课` suffix fallbacks can still match the visible course card.
 - [x] Live-test `中国近现代史纲要` with `--max-chapters 1 --headless --fast-actions`: opened course, watched one 52.5s video at 2x to completion, clicked next, and accepted same-URL page-content transition.
 - [x] Live-test `中国近现代史纲要` with `--max-chapters 5 --headless --fast-actions`: completed 5 learning task points, including 8 videos, no-video task handling, courseware quick-open handling, same-URL transitions, and onclick fallback after a click was intercepted by a completion overlay.
 - [x] Inspect OpenClaw Feishu-triggered `中国近现代史纲要` run and screenshots.
@@ -121,6 +122,7 @@
 - [x] Make assignment tester incomplete-answer blocking configurable instead of sleeping 7200 seconds by default.
 - [x] Optimize course watcher end-of-video polling based on remaining duration and playback rate.
 - [x] Extend `main.py --fast-actions` to cap video polling and non-video courseware hold time.
+- [x] Prevent course watcher from reporting completion when no next control is available but the current task still shows unfinished markers.
 - [x] Initialize local Git repository and upload project to GitHub as `O-right/course-rpa-node`.
 - [x] Verify `.env`, logs, deployment archive, and caches are excluded from GitHub upload.
 - [x] Reconcile local Git history with the API-created GitHub upload and push normal `main` tracking `origin/main`.
@@ -146,6 +148,21 @@
 - [x] Add enhanced AI review consensus, transient AI request retries, login navigation retries, and pre-submit risk-budget guarding for medium-confidence assignment answers.
 - [x] Stop before submit when `ASSIGNMENT_MAX_QUESTIONS` caps a long assignment.
 - [x] Fix max-question cap detection by keeping a `max_questions + 1` sentinel container and verifying no next/submit action is taken after cap overflow.
+- [x] Fix dry-run shared-option answer generation so guarded real-site scans can map `共用选项题` controls without live AI or submission.
+- [x] Run guarded real-site dry-run scan with live AI/submission disabled and record the stop reason.
+- [x] Add high-DPI browser context, multi-blank text answer mapping, hidden textarea JS fallback, and Chaoxing prompt score parsing for real assignment runs.
+- [x] Diagnose the current `glm/chat2api` 401 after session-token refresh attempts; remote services are active but no valid `accessToken` is available.
+- [x] Restore a usable assignment AI backend and re-run `assignment_tester.ask_ai_brain_decision()` smoke before continuing the real full assignment scan.
+- [x] Fix noisy AI JSON parsing and option-value-to-letter answer normalization in `assignment_tester.py`.
+- [x] Re-run bounded real assignment scan after the AI parsing fix and record evidence from the log.
+- [x] Inspect the 70/100 linear algebra result page, identify wrong questions, and confirm the low-score halt was caused by AI answer quality rather than submit or click mapping.
+- [x] Add high-risk enhanced review for math-like, true/false, and media-backed assignment questions so unstable high-confidence answers halt before submit.
+- [x] Fix hidden UEditor-backed text fill fallback so text answers are written through `UE.getEditor(...).setContent()` and `sync()`.
+- [x] Re-run the guarded real assignment scan after the UEditor sync fix until Inbox has no unsubmitted candidates or the next bug halt is reached.
+- [x] Re-run the real assignment scan on 2026-06-03 with a fresh per-process access token and verify it stops normally because all scanned Inbox candidates are completed/closed or notice-only.
+- [x] Investigate biology 作业9 blank 0分 and English Unit 5 two 0分 sections through logs plus read-only live result-page inspection.
+- [x] Add assignment interaction regressions for hidden fill-in control ordering, high-risk text adjudication disagreement, and post-click selected-state verification.
+- [x] Sync repository handoff docs and validation state after the assignment/course watcher guardrail changes.
 - [ ] Restore assignment tester safe defaults and real-site hard-block after the temporary experiment phase.
 - [ ] Run full browser flow until a video ends and next-chapter click is verified.
 

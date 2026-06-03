@@ -165,3 +165,59 @@ Decision: `assignment_tester.py` now treats `ASSIGNMENT_AI_MIN_CONFIDENCE` / `AS
 Reason: A single self-reported confidence threshold stopped the latest live run at a recoverable medium-confidence question. Lowering the threshold globally would risk poor submissions, so the runner now uses repeated review and a pre-submit risk budget to continue through stable medium-confidence answers while still stopping on unstable, very low-confidence, unanswerable, or over-budget cases.
 
 Consequence: `ASSIGNMENT_MAX_QUESTIONS` now defaults to 120, and hitting that cap is treated as an incomplete run that stops before submit instead of submitting a partially processed page.
+
+## 2026-06-01: Chat2API Recovery Requires A Valid Access Token
+
+Decision: Treat a ChatGPT session cookie update as incomplete until `chatgpt.com/api/auth/session` returns an `accessToken` and an authenticated `/v1/chat/completions` smoke succeeds. A session-token-only file, even with `__Secure-next-auth.session-token.0/.1` split cookies, is not enough evidence that `glm/chat2api` is usable.
+
+Reason: During the assignment real-run continuation, the user-provided `__Secure-next-auth.session-token` and explicit split cookie reached the session endpoint but returned only `WARNING_BANNER`, not `accessToken`. `chat2api` therefore kept falling back to expired or empty tokens and local assignment AI calls failed with HTTP 401.
+
+Consequence: Before resuming real assignment scans, restore a usable AI backend by supplying a complete current ChatGPT cookie header, a direct `accessToken`, a 45-character refresh token, or another working OpenAI-compatible API configuration, then run the assignment AI smoke.
+
+## 2026-06-02: Chat2API Uses A Project-Local Mihomo Proxy
+
+Decision: Keep `chat2api` using `PROXY_URL=http://127.0.0.1:7890` and run the user-provided chained proxy through the local `mihomo.service` bound to loopback ports `7890`, `7891`, and `9090`.
+
+Reason: The ChatGPT upstream path needs a working AI-capable network route, but the proxy must stay scoped to this `chat2api` deployment rather than becoming a container-wide proxy.
+
+Consequence: Updating the proxy means replacing `/home/ubuntu/proxy/config.yaml` and restarting `mihomo.service`; do not set global shell, systemd manager, or container-wide proxy environment variables for unrelated workloads.
+
+## 2026-06-02: Assignment AI Responses Are Parsed Defensively
+
+Decision: `assignment_tester.py` treats AI responses as potentially noisy transport text, not guaranteed pure JSON. It extracts the first JSON object from Markdown-fenced, citation-marked, or otherwise prefixed responses, and normalizes returned answers by mapping unique option text/value matches back to option letters.
+
+Reason: A real assignment run produced AI output wrapped in a fenced block before the JSON, and another response returned a literal option value such as `"6"` for a single-choice question whose controls require `A`/`B`/`C` letters.
+
+Consequence: Prompting still asks for JSON-only output, but parser correctness no longer depends on the model obeying that instruction exactly. Ambiguous value matches remain rejected so the runner does not click an arbitrary option.
+
+## 2026-06-02: High-Risk Assignment Questions Require Review Consensus
+
+Decision: During the temporary assignment experiment phase, math-like, true/false, and media-backed questions go through enhanced review even when the primary AI answer reports high confidence. High-risk review defaults to stricter consensus, can require the primary answer to agree with the review consensus, and labels media screenshots as `media-node-N` in the AI payload so image order can be tied to option order.
+
+Reason: A real `作业:《2026春-线性代数》2026.0528作业` submission scored 70/100. Result-page inspection showed three wrong high-confidence answers, including one pure text linear-algebra concept question and two image/formula-dependent questions. Self-reported confidence alone was not enough evidence to submit.
+
+Consequence: Future real assignment runs may stop more often on high-risk question disagreement, but this is intentional; the guardrail should surface unstable answers before submit instead of continuing to a low-score halt. For high-risk text/image fill-in questions, a later single adjudication response must not override multi-sample review disagreement.
+
+## 2026-06-03: Assignment Actions Must Verify Persisted State
+
+Decision: In real assignment experiment runs, a successful Playwright click/fill is not enough evidence that an answer was applied. Choice and shared-option clicks must verify a selected state in the DOM before the question is counted as mapped, and hidden multi-blank text controls must be ordered by their visible editor/input position rather than raw hidden textarea DOM order.
+
+Reason: Incident review found two distinct failure modes. `作业:《2025-2026-2细胞生物学》作业9-细胞C` was submitted as 0分 with blank answers after an old run logged 54 answer clicks but never verified selected state. `作业:《英语02》课后作业Book2 Unit 5` scored 44.4/100 because two fill-in sections were cyclically shifted despite the intended answers being logged.
+
+Consequence: Real runs should halt more readily when a click does not produce a verifiable selected state or when text control ordering is ambiguous. This is preferred over submitting a page whose browser interaction looked successful but whose answers were not actually persisted in the form state.
+
+## 2026-06-03: No Next Control Is Not Completion Evidence
+
+Decision: The course watcher must not report full-course completion solely because it cannot find a next-task control or catalog entry. Before returning completion on a no-next path, it waits briefly for Chaoxing completion state to refresh and scans the current page/catalog for unfinished-task markers.
+
+Reason: A `“四史”专题课` stop screenshot showed the current `6.1` task still had an orange unfinished marker while the page had no visible next control. The old logic treated that as normal completion because `CX_STOP_WHEN_NO_NEXT=true`.
+
+Consequence: A no-next page with unfinished markers now fails and saves `no_next_but_incomplete` evidence instead of printing "自动看课流程完成". Full completion still requires either a real successful end-of-course run or a no-next page without detected unfinished signals.
+
+## 2026-06-03: API Recovery Stays Outside The Repository
+
+Decision: The current `glm/chat2api` token/backend recovery is handled outside this repository by the user. Repo maintenance must not add replacement API keys, ChatGPT access tokens, cookies, proxy secrets, or recovered `.env` values to tracked files.
+
+Reason: The API issue is operational credential state, not source code. Keeping it outside the repo prevents accidental secret persistence while still allowing local bounded runs to use process-level environment overrides.
+
+Consequence: Future agents should treat API health as an external prerequisite before live assignment experiments. They may document pass/fail evidence, but must not commit token material or print secret values.

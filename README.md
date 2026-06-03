@@ -67,12 +67,15 @@ CX_PROGRESS_COMPLETION_MARGIN_SECONDS=0.8
 CX_PROGRESS_STALL_POLLS=3
 CX_COMMITMENT_TIMEOUT_MS=10000
 CX_COURSEWARE_HOLD_SECONDS=1.0
+CX_COMPLETION_SETTLE_SECONDS=5.0
 CX_SCREENSHOT_DIR=logs/screenshots
 ```
 
 The watcher processes learning task points, not only URL-level chapters. If a task point contains multiple `<video>` elements, it sets speed and waits for each video in sequence. If a task point has no video, it treats it as a courseware/non-video task, tries to open a visible courseware entry, then closes the popup or goes back quickly.
 
 The watcher retries playback if the video pauses, the speed drifts, or progress stops moving for several polls. Near the end of a video, it wakes early based on remaining duration and playback rate instead of always sleeping the full poll interval. If a failure occurs, it saves a screenshot under `logs/screenshots`.
+
+When no next-task control is available, the watcher waits briefly for Chaoxing to refresh completion state and scans the current page/catalog for unfinished-task markers. If the current task still appears incomplete, it fails with a diagnostic screenshot instead of reporting full-course completion.
 
 `--fast-actions` also lowers action delays, disables Playwright slow motion, caps video progress polling at 3 seconds, and caps non-video courseware hold time at 0.2 seconds. You can override those directly:
 

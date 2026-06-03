@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import random
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -67,6 +68,7 @@ CONFIG: Dict[str, Any] = {
     "commitment_timeout_ms": env_int("CX_COMMITMENT_TIMEOUT_MS", 10_000),
     "next_navigation_timeout_ms": env_int("CX_NEXT_NAVIGATION_TIMEOUT_MS", 10_000),
     "courseware_hold_seconds": env_float("CX_COURSEWARE_HOLD_SECONDS", 1.0),
+    "completion_settle_seconds": env_float("CX_COMPLETION_SETTLE_SECONDS", 5.0),
     "screenshot_dir": os.getenv("CX_SCREENSHOT_DIR", "logs/screenshots"),
     "selectors": {
         "username_input": "#phone",
@@ -166,6 +168,25 @@ class CourseAutoTester:
             raise RuntimeError("浏览器页面尚未初始化")
         resolved = selector.format(**values)
         return self.page.locator(resolved).first
+
+    def course_keyword_terms(self, keyword: str) -> list[str]:
+        terms: list[str] = []
+
+        def add(term: str) -> None:
+            term = term.strip()
+            if term and term not in terms:
+                terms.append(term)
+
+        add(keyword)
+        add(keyword.replace("“", '"').replace("”", '"'))
+        add(keyword.replace("“", "").replace("”", "").replace('"', ""))
+
+        for quoted in re.findall(r"[“\"]([^”\"]+)[”\"]", keyword):
+            add(quoted)
+        for suffix in ("专题课", "课程", "课"):
+            if keyword.endswith(suffix):
+                add(keyword[: -len(suffix)])
+        return terms
 
     def find_locator_in_page_or_frames(
         self,
@@ -302,29 +323,40 @@ class CourseAutoTester:
         if not self.page:
             return False
 
+        keyword_terms = self.course_keyword_terms(keyword)
         deadline = time.monotonic() + self.config["lookup_timeout_ms"] / 1000
         course: Optional[Locator] = None
+        matched_term = keyword
 
         while time.monotonic() < deadline:
             # 模糊匹配：在主页面和所有 frames 中查找包含关键词的可点击元素
             containers = [self.page] + self.page.frames
             for container in containers:
-                candidate = container.get_by_text(keyword, exact=False).first
-                try:
-                    candidate.wait_for(state="visible", timeout=1_000)
-                    course = candidate
+                for term in keyword_terms:
+                    candidate = container.get_by_text(term, exact=False).first
+                    try:
+                        candidate.wait_for(state="visible", timeout=1_000)
+                        course = candidate
+                        matched_term = term
+                        break
+                    except (PlaywrightTimeoutError, PlaywrightError):
+                        continue
+                if course:
                     break
-                except (PlaywrightTimeoutError, PlaywrightError):
-                    continue
             if course:
                 break
             time.sleep(0.5)
 
         if not course:
-            print(f"未找到元素 [课程卡片: {keyword}]（模糊匹配），url={self.page.url}")
+            print(
+                f"未找到元素 [课程卡片: {keyword}]（模糊匹配），"
+                f"尝试关键词={keyword_terms}，url={self.page.url}"
+            )
             self.save_debug_screenshot("open_course_failed")
             return False
 
+        if matched_term != keyword:
+            print(f"课程关键词 [{keyword}] 未直接命中，已用 [{matched_term}] 匹配。")
         if not self.safe_click_with_optional_popup(course, f"课程卡片: {keyword}"):
             return False
         self.wait_for_page_settle("课程页")
@@ -423,7 +455,8 @@ class CourseAutoTester:
 
         videos: list[Locator] = []
         selector = self.selectors["video"]
-        for frame in self.page.frames:
+        containers = [self.page] + [frame for frame in self.page.frames if frame != self.page.main_frame]
+        for frame in containers:
             try:
                 locator = frame.locator(selector)
                 count = locator.count()
@@ -438,6 +471,93 @@ class CourseAutoTester:
                 except (PlaywrightTimeoutError, PlaywrightError):
                     continue
         return videos
+
+    def incomplete_learning_signals(self) -> list[str]:
+        if not self.page:
+            return []
+
+        signals: list[str] = []
+        containers = [self.page] + [frame for frame in self.page.frames if frame != self.page.main_frame]
+        for index, container in enumerate(containers):
+            try:
+                result = container.evaluate(
+                    """() => {
+                        const visible = element => {
+                            const style = window.getComputedStyle(element);
+                            const box = element.getBoundingClientRect();
+                            return style.display !== 'none'
+                                && style.visibility !== 'hidden'
+                                && box.width > 0
+                                && box.height > 0;
+                        };
+                        const textOf = element => (element.innerText || element.textContent || '').replace(/\\s+/g, ' ').trim();
+                        const classOf = element => {
+                            const parts = [];
+                            let current = element;
+                            for (let depth = 0; current && depth < 3; depth += 1) {
+                                parts.push(String(current.className || ''));
+                                current = current.parentElement;
+                            }
+                            return parts.join(' ');
+                        };
+                        const found = [];
+                        const bodyText = textOf(document.body || document.documentElement);
+                        if (/未完成任务点|当前视频不可拖拽|未达成|待完成/.test(bodyText)) {
+                            found.push('页面文本提示仍有未完成任务点');
+                        }
+
+                        const activeSelectors = [
+                            '.posCatalog_select',
+                            '.active',
+                            '.current',
+                            '.curmark',
+                            '.selected',
+                            '[aria-current="true"]'
+                        ];
+                        for (const selector of activeSelectors) {
+                            for (const active of Array.from(document.querySelectorAll(selector)).filter(visible)) {
+                                const activeText = textOf(active).slice(0, 80);
+                                const activeClass = classOf(active);
+                                const incompleteMarker = active.querySelector(
+                                    '.jobCount, [class*="jobCount"], [class*="orange"], [class*="unfinish"], [class*="unfinished"], [class*="incomplete"], [class*="notFinish"], [class*="not-finish"]'
+                                );
+                                if (incompleteMarker && visible(incompleteMarker)) {
+                                    found.push(`当前目录项仍有未完成标记: ${activeText || activeClass}`);
+                                }
+                            }
+                        }
+
+                        for (const marker of Array.from(document.querySelectorAll(
+                            '.jobCount, [class*="jobCount"], [class*="orange"], [class*="unfinish"], [class*="unfinished"], [class*="incomplete"], [class*="notFinish"], [class*="not-finish"]'
+                        )).filter(visible)) {
+                            const markerText = textOf(marker).slice(0, 40);
+                            const markerClass = classOf(marker);
+                            found.push(`页面仍有未完成标记: ${markerText || markerClass}`);
+                            if (found.length >= 5) {
+                                break;
+                            }
+                        }
+
+                        return found;
+                    }"""
+                )
+                for signal in result:
+                    label = f"frame#{index}: {signal}"
+                    if label not in signals:
+                        signals.append(label)
+            except PlaywrightError:
+                continue
+        return signals
+
+    def wait_for_incomplete_signals_to_clear(self) -> list[str]:
+        settle_seconds = max(0.0, float(self.config.get("completion_settle_seconds", 0.0)))
+        deadline = time.monotonic() + settle_seconds
+        last_signals = self.incomplete_learning_signals()
+        while last_signals and time.monotonic() < deadline:
+            print("检测到当前任务可能仍未完成，等待平台状态刷新...")
+            time.sleep(min(1.0, max(0.1, deadline - time.monotonic())))
+            last_signals = self.incomplete_learning_signals()
+        return last_signals
 
     def set_video_speed_and_play(self, video: Optional[Locator] = None) -> bool:
         try:
@@ -736,6 +856,13 @@ class CourseAutoTester:
                 continue
 
         print("章节列表中没有找到可进入的下一章节，课程可能已全部完成。")
+        incomplete_signals = self.wait_for_incomplete_signals_to_clear()
+        if incomplete_signals:
+            print("没有下一节控件，但当前学习任务仍显示未完成，不能判定全课完成。")
+            for signal in incomplete_signals[:5]:
+                print(f"未完成信号: {signal}")
+            self.save_debug_screenshot("no_next_but_incomplete")
+            return "failed"
         self.save_debug_screenshot("no_next_chapter_in_list")
         return "completed" if self.config.get("stop_when_no_next", True) else "failed"
 

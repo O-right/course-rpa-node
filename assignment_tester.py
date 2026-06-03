@@ -58,7 +58,7 @@ CONFIG: Dict[str, Any] = {
     "ai_review_multiple": env_flag("ASSIGNMENT_AI_REVIEW_MULTIPLE", "true"),
     "ai_log_raw_response": env_flag("ASSIGNMENT_AI_LOG_RAW_RESPONSE", "true"),
     "ai_enable_images": env_flag("ASSIGNMENT_AI_ENABLE_IMAGES", "true"),
-    "ai_max_images_per_question": env_int("ASSIGNMENT_AI_MAX_IMAGES_PER_QUESTION", 1),
+    "ai_max_images_per_question": env_int("ASSIGNMENT_AI_MAX_IMAGES_PER_QUESTION", 6),
     "ai_max_image_bytes": env_int("ASSIGNMENT_AI_MAX_IMAGE_BYTES", 1_500_000),
     "ai_min_confidence": env_float("ASSIGNMENT_AI_MIN_CONFIDENCE", 0.75),
     "ai_accept_confidence": env_float(
@@ -67,8 +67,17 @@ CONFIG: Dict[str, Any] = {
     ),
     "ai_review_confidence": env_float("ASSIGNMENT_AI_REVIEW_CONFIDENCE", 0.55),
     "ai_enhanced_review": env_flag("ASSIGNMENT_AI_ENHANCED_REVIEW", "true"),
+    "ai_review_high_risk": env_flag("ASSIGNMENT_AI_REVIEW_HIGH_RISK", "true"),
+    "ai_review_media": env_flag("ASSIGNMENT_AI_REVIEW_MEDIA", "true"),
+    "ai_review_math": env_flag("ASSIGNMENT_AI_REVIEW_MATH", "true"),
+    "ai_review_true_false": env_flag("ASSIGNMENT_AI_REVIEW_TRUE_FALSE", "true"),
     "ai_review_samples": env_int("ASSIGNMENT_AI_REVIEW_SAMPLES", 3),
     "ai_consensus_ratio": env_float("ASSIGNMENT_AI_CONSENSUS_RATIO", 0.66),
+    "ai_high_risk_consensus_ratio": env_float("ASSIGNMENT_AI_HIGH_RISK_CONSENSUS_RATIO", 1.0),
+    "ai_high_risk_require_primary_consensus": env_flag(
+        "ASSIGNMENT_AI_HIGH_RISK_REQUIRE_PRIMARY_CONSENSUS",
+        "true",
+    ),
     "ai_review_temperature": env_float("ASSIGNMENT_AI_REVIEW_TEMPERATURE", 0.2),
     "ai_require_confidence": env_flag("ASSIGNMENT_AI_REQUIRE_CONFIDENCE", "true"),
     "stop_on_low_confidence": env_flag("ASSIGNMENT_STOP_ON_LOW_CONFIDENCE", "true"),
@@ -78,8 +87,10 @@ CONFIG: Dict[str, Any] = {
     "stop_on_low_score": env_flag("ASSIGNMENT_STOP_ON_LOW_SCORE", "true"),
     "min_acceptable_score": env_float("ASSIGNMENT_MIN_ACCEPTABLE_SCORE", 80.0),
     "stop_on_unanswerable": env_flag("ASSIGNMENT_STOP_ON_UNANSWERABLE", "true"),
+    "skip_unanswerable_candidate": env_flag("ASSIGNMENT_SKIP_UNANSWERABLE_CANDIDATE", "false"),
     "server_mode": env_flag("ASSIGNMENT_SERVER_MODE"),
     "headless": env_flag("ASSIGNMENT_HEADLESS", os.getenv("ASSIGNMENT_SERVER_MODE", "false")),
+    "device_scale_factor": env_float("ASSIGNMENT_DEVICE_SCALE_FACTOR", 2.0),
     "browser_channel": os.getenv("ASSIGNMENT_BROWSER_CHANNEL", "chrome"),
     "browser_executable_path": os.getenv("ASSIGNMENT_BROWSER_EXECUTABLE_PATH", ""),
     "timeout_ms": env_int("ASSIGNMENT_TIMEOUT_MS", 15_000),
@@ -106,8 +117,9 @@ CONFIG: Dict[str, Any] = {
     "submit_button_timeout_ms": env_int("ASSIGNMENT_SUBMIT_BUTTON_TIMEOUT_MS", 3_000),
     "submit_pre_click_wait_ms": env_int("ASSIGNMENT_SUBMIT_PRE_CLICK_WAIT_MS", 100),
     "submit_after_click_wait_ms": env_int("ASSIGNMENT_SUBMIT_AFTER_CLICK_WAIT_MS", 500),
-    "confirmation_initial_wait_ms": env_int("ASSIGNMENT_CONFIRMATION_INITIAL_WAIT_MS", 250),
-    "confirmation_timeout_ms": env_int("ASSIGNMENT_CONFIRMATION_TIMEOUT_MS", 800),
+    "submit_completion_timeout_ms": env_int("ASSIGNMENT_SUBMIT_COMPLETION_TIMEOUT_MS", 12_000),
+    "confirmation_initial_wait_ms": env_int("ASSIGNMENT_CONFIRMATION_INITIAL_WAIT_MS", 500),
+    "confirmation_timeout_ms": env_int("ASSIGNMENT_CONFIRMATION_TIMEOUT_MS", 12_000),
     "confirmation_poll_ms": env_int("ASSIGNMENT_CONFIRMATION_POLL_MS", 100),
     "confirmation_candidate_timeout_ms": env_int("ASSIGNMENT_CONFIRMATION_CANDIDATE_TIMEOUT_MS", 100),
     "max_confirmation_rounds": env_int("ASSIGNMENT_MAX_CONFIRMATION_ROUNDS", 3),
@@ -119,6 +131,7 @@ CONFIG: Dict[str, Any] = {
     "scan_interval_seconds": env_int("ASSIGNMENT_SCAN_INTERVAL_SECONDS", 3600),
     "max_scan_rounds": env_int("ASSIGNMENT_MAX_SCAN_ROUNDS", 0),
     "max_candidates_per_round": env_int("ASSIGNMENT_MAX_CANDIDATES_PER_ROUND", 10),
+    "exit_when_no_unsubmitted": env_flag("ASSIGNMENT_EXIT_WHEN_NO_UNSUBMITTED", "false"),
     "inbox_keywords": ["作业：", "作业:", "作业", "测试", "练习题"],
     "inbox_exclude_keywords": ["作业结束提醒"],
     "dry_run": env_flag("ASSIGNMENT_DRY_RUN", "false"),
@@ -164,6 +177,7 @@ CONFIG: Dict[str, Any] = {
             "a:has-text('提交'), button:has-text('提交'), input[type='submit']"
         ),
         "confirm_submit_button": (
+            "#workpop #popok, #popok, .popBottom #popok, "
             ".layui-layer-btn a:has-text('提交'), .layui-layer-btn button:has-text('提交'), "
             ".layui-layer-btn a:has-text('确认提交'), .layui-layer-btn button:has-text('确认提交'), "
             ".layui-layer-btn0, .aui_state_highlight, .layui-layer .bluebtn, "
@@ -196,7 +210,7 @@ SYSTEM_PROMPT = (
     "{\"answer\": [\"A\", \"C\", \"B\", \"E\"], \"confidence\": 0.82}。"
     "confidence 必须是 0 到 1 之间的小数，表示你对最终答案正确性的把握；"
     "如果题干/图片/选项信息不足或把握较低，也要给出最佳猜测，但 confidence 必须降低，并附加短字段 reason 和 evidence。"
-    "不要包含 JSON 以外的其他字符。"
+    "不要包含 JSON 以外的其他字符，不要使用 Markdown 代码块，不要添加引用标记。"
 )
 
 
@@ -297,7 +311,22 @@ def ask_ai_brain_decision(
             media or [],
             label="primary",
         )
-        review_needed = should_run_enhanced_review(cfg, question_type, decision, options_dict)
+        high_risk_review = question_requires_high_risk_review(
+            cfg,
+            question_type,
+            question_text,
+            options_dict,
+            media or [],
+        )
+        review_needed = should_run_enhanced_review(
+            cfg,
+            question_type,
+            question_text,
+            decision,
+            options_dict,
+            media or [],
+            high_risk_review,
+        )
         if review_needed:
             decision = run_enhanced_ai_review(
                 cfg,
@@ -307,6 +336,7 @@ def ask_ai_brain_decision(
                 options_dict,
                 media or [],
                 decision,
+                high_risk_review=high_risk_review,
             )
         elif (
             question_type == "multiple"
@@ -364,11 +394,19 @@ def request_ai_answers(
     instruction: str = "",
     temperature: Optional[float] = None,
 ) -> AIAnswerResult:
+    accuracy_instruction = build_accuracy_instruction(cfg, question_type, question_text, options_dict, media)
     user_payload: Dict[str, Any] = {
         "question_type": question_type,
         "question": question_text,
         "options": options_dict,
     }
+    if media:
+        user_payload["media_order"] = [
+            {"label": item.label, "source": item.source, "byte_size": item.byte_size}
+            for item in media
+        ]
+    if accuracy_instruction:
+        user_payload["accuracy_instruction"] = accuracy_instruction
     if first_answer is not None:
         user_payload.update(
             {
@@ -380,7 +418,9 @@ def request_ai_answers(
             }
         )
     if instruction:
-        user_payload["review_instruction"] = instruction
+        user_payload["review_instruction"] = (
+            f"{instruction}\n{accuracy_instruction}" if accuracy_instruction else instruction
+        )
 
     payload = {
         "model": cfg["model"],
@@ -395,7 +435,7 @@ def request_ai_answers(
     content = data["choices"][0]["message"]["content"]
     if cfg.get("ai_log_raw_response"):
         LOGGER.info("AI %s raw response: %s", label, content)
-    parsed = json.loads(content)
+    parsed = parse_ai_response_json(content)
     answers = parsed.get("answer")
     normalized = normalize_ai_answers(answers, question_type, options_dict)
     if not normalized:
@@ -452,16 +492,102 @@ def post_ai_request_with_retries(
     raise RuntimeError("AI request failed without exception")
 
 
+def question_requires_high_risk_review(
+    cfg: Dict[str, Any],
+    question_type: str,
+    question_text: str,
+    options_dict: Dict[str, str],
+    media: List[QuestionMedia],
+) -> bool:
+    if not cfg.get("ai_review_high_risk"):
+        return False
+    if cfg.get("ai_review_media") and media:
+        return True
+    if cfg.get("ai_review_true_false") and is_true_false_question(question_type, options_dict):
+        return True
+    if cfg.get("ai_review_math") and is_math_like_question(question_text):
+        return True
+    return False
+
+
+def is_true_false_question(question_type: str, options_dict: Dict[str, str]) -> bool:
+    if question_type not in {"single", "unknown"} or len(options_dict) != 2:
+        return False
+    normalized_options = {normalize_answer_text(value) for value in options_dict.values()}
+    return bool(normalized_options & {"对", "错", "正确", "错误", "TRUE", "FALSE"})
+
+
+def is_math_like_question(question_text: str) -> bool:
+    compact = normalize_answer_text(question_text)
+    math_markers = (
+        "矩阵",
+        "行列式",
+        "线性",
+        "方程组",
+        "特征值",
+        "特征向量",
+        "向量组",
+        "相似",
+        "合同",
+        "秩",
+        "AX=B",
+        "R(A",
+        "Λ",
+        "λ",
+    )
+    return any(normalize_answer_text(marker) in compact for marker in math_markers)
+
+
+def build_accuracy_instruction(
+    cfg: Dict[str, Any],
+    question_type: str,
+    question_text: str,
+    options_dict: Dict[str, str],
+    media: List[QuestionMedia],
+) -> str:
+    instructions: List[str] = []
+    if media:
+        instructions.append(
+            "图片按 media_order 和随后的图像顺序一一对应；如果选项文字为空且图片数量等于选项数量，"
+            "请按 A/B/C/D 对应 media-node-1/media-node-2/media-node-3/media-node-4 的顺序判断。"
+            "如果题干中的公式或结论只在图片里，请必须依据图片判断；如果图片证据不足，请降低 confidence。"
+        )
+    if is_true_false_question(question_type, options_dict):
+        instructions.append(
+            "判断题必须先还原完整命题再判断真假；如果“则”后面的公式、矩阵或结论缺失且图片也无法确认，"
+            "不要高置信猜测。"
+        )
+    if cfg.get("ai_review_math") and is_math_like_question(question_text):
+        instructions.append(
+            "数学/线性代数题请逐项检查必要条件和充分条件，不要把常见定理漏掉前提。"
+            "非齐次线性方程组 AX=b 有解等价于 rank(A)=rank(A|b)；若 A 是 m×n 且 rank(A)=m，"
+            "则 A 的列空间为 R^m，所以对给定 b∈R^m 方程组相容；rank(A)=n 只能在已相容时推出唯一解。"
+            "涉及相似、合同、伴随矩阵、特征值或秩时，请分别核对定义和反例。"
+        )
+    return "\n".join(instructions)
+
+
 def should_run_enhanced_review(
     cfg: Dict[str, Any],
     question_type: str,
+    question_text: str,
     decision: AIAnswerResult,
     options_dict: Dict[str, str],
+    media: List[QuestionMedia],
+    high_risk_review: bool = False,
 ) -> bool:
     if not cfg.get("ai_enhanced_review"):
         return False
     if not decision.answers:
         return False
+    if high_risk_review:
+        LOGGER.info(
+            "AI enhanced review required for high-risk question: type=%s media=%s question=%s",
+            question_type,
+            len(media),
+            re.sub(r"\s+", " ", question_text)[:120],
+        )
+        return True
     if question_type in {"multiple", "shared_options"} and len(options_dict) >= 2:
         return True
     confidence = decision.confidence
@@ -480,6 +606,7 @@ def run_enhanced_ai_review(
     options_dict: Dict[str, str],
     media: List[QuestionMedia],
     primary: AIAnswerResult,
+    high_risk_review: bool = False,
 ) -> AIAnswerResult:
     requested_samples = max(1, int(cfg.get("ai_review_samples", 3)))
     samples = [primary]
@@ -507,13 +634,62 @@ def run_enhanced_ai_review(
         except (requests.RequestException, KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
             LOGGER.warning("AI enhanced-review-%s failed: %s", sample_index, exc)
 
-    return combine_ai_review_samples(cfg, samples, question_type)
+    combined = combine_ai_review_samples(
+        cfg,
+        samples,
+        question_type,
+        high_risk_review=high_risk_review,
+    )
+    if question_type == "text" and combined.low_confidence and len(samples) > 1:
+        candidate_answers = [sample.answers for sample in samples if sample.answers]
+        adjudication_instruction = (
+            "这是多空文本题的最终仲裁复核。前几次独立回答不完全一致，候选答案如下："
+            + json.dumps(candidate_answers, ensure_ascii=False)
+            + "。请重新依据题干和图片逐空判断，返回唯一最终 answer 数组。"
+            "如果候选答案里有同义、大小写或词形差异，请选择最符合题图原文和语境的一项；"
+            "如果证据仍不足，请降低 confidence 并说明原因。"
+        )
+        try:
+            adjudicated = request_ai_answers(
+                cfg,
+                headers,
+                question_type,
+                question_text,
+                options_dict,
+                media,
+                label="text-adjudication",
+                instruction=adjudication_instruction,
+                temperature=0,
+            )
+            adjudicated.attempts = len(samples) + 1
+            adjudicated.review_required = True
+            adjudicated.consensus_ratio = max(combined.consensus_ratio, 1.0 if not adjudicated.low_confidence else 0.0)
+            LOGGER.info(
+                "AI text adjudication summary answers=%s confidence=%s low_confidence=%s reason=%s",
+                adjudicated.answers,
+                adjudicated.confidence,
+                adjudicated.low_confidence,
+                adjudicated.reason,
+            )
+            if high_risk_review:
+                combined.reason = (
+                    f"{combined.reason}; high-risk text adjudication did not override review disagreement"
+                    if combined.reason
+                    else "high-risk text adjudication did not override review disagreement"
+                )
+                return combined
+            if adjudicated.answers and not adjudicated.low_confidence:
+                return adjudicated
+        except (requests.RequestException, KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            LOGGER.warning("AI text-adjudication failed: %s", exc)
+    return combined
 
 
 def combine_ai_review_samples(
     cfg: Dict[str, Any],
     samples: List[AIAnswerResult],
     question_type: str,
+    high_risk_review: bool = False,
 ) -> AIAnswerResult:
     usable = [sample for sample in samples if sample.answers]
     if not usable:
@@ -530,6 +706,11 @@ def combine_ai_review_samples(
     accept_confidence = float(cfg.get("ai_accept_confidence", cfg.get("ai_min_confidence", 0.75)))
     review_confidence = float(cfg.get("ai_review_confidence", 0.55))
     required_consensus = float(cfg.get("ai_consensus_ratio", 0.66))
+    if high_risk_review:
+        required_consensus = max(
+            required_consensus,
+            float(cfg.get("ai_high_risk_consensus_ratio", 1.0)),
+        )
     low_confidence_reasons = [sample.reason for sample in top_group if sample.low_confidence and sample.reason]
 
     low_confidence = False
@@ -537,6 +718,14 @@ def combine_ai_review_samples(
     if consensus_ratio < required_consensus:
         low_confidence = True
         reason_parts.append(f"consensus {consensus_ratio:.2f} < required {required_consensus:.2f}")
+    if (
+        high_risk_review
+        and cfg.get("ai_high_risk_require_primary_consensus", True)
+        and samples
+        and tuple(samples[0].answers) != top_key
+    ):
+        low_confidence = True
+        reason_parts.append("primary answer disagreed with review consensus on high-risk question")
     if confidence is None:
         if cfg.get("ai_require_confidence"):
             low_confidence = True
@@ -599,8 +788,41 @@ def build_ai_user_content(user_payload: Dict[str, Any], media: List[QuestionMedi
         }
     ]
     for item in media:
+        content.append(
+            {
+                "type": "text",
+                "text": f"附图 {item.label}，来源={item.source}，按 DOM/页面出现顺序排列。",
+            }
+        )
         content.append({"type": "image_url", "image_url": {"url": item.data_url}})
     return content
+
+
+def parse_ai_response_json(content: str) -> Dict[str, Any]:
+    """Parse the first JSON object from an AI response.
+
+    Chat2API sometimes returns valid JSON wrapped in Markdown fences, quotes, or
+    citation markers. The downstream logic only needs the first JSON object.
+    """
+    stripped = content.strip()
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, dict):
+        return parsed
+
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(stripped):
+        if char != "{":
+            continue
+        try:
+            parsed, _ = decoder.raw_decode(stripped[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    raise json.JSONDecodeError("AI response does not contain a JSON object", content, 0)
 
 
 def normalize_ai_answers(answers: Any, question_type: str, options_dict: Dict[str, str]) -> List[str]:
@@ -608,7 +830,8 @@ def normalize_ai_answers(answers: Any, question_type: str, options_dict: Dict[st
         if question_type == "text":
             values = [answers]
         else:
-            values = re.findall(r"[A-Z]", answers.upper())
+            letters = re.findall(r"[A-Z]", answers.upper())
+            values = letters if letters else [answers]
     elif isinstance(answers, list):
         values = [str(item).strip() for item in answers if str(item).strip()]
     elif isinstance(answers, dict):
@@ -626,17 +849,67 @@ def normalize_ai_answers(answers: Any, question_type: str, options_dict: Dict[st
     allowed_order = list(options_dict.keys())
     allowed = set(allowed_order)
     if question_type == "shared_options":
-        return [value.strip().upper() for value in values if value.strip().upper() in allowed]
+        mapped_values = []
+        for value in values:
+            letter = map_ai_answer_to_option_letter(value, options_dict)
+            if letter:
+                mapped_values.append(letter)
+        return mapped_values
 
     seen = set()
     normalized: List[str] = []
     for value in values:
-        letter = value.strip().upper()
+        letter = map_ai_answer_to_option_letter(value, options_dict)
         if letter not in allowed or letter in seen:
             continue
         seen.add(letter)
         normalized.append(letter)
     return sorted(normalized, key=allowed_order.index)
+
+
+def map_ai_answer_to_option_letter(value: Any, options_dict: Dict[str, str]) -> str:
+    raw = str(value).strip()
+    if not raw:
+        return ""
+
+    allowed = set(options_dict)
+    letter = raw.upper()
+    if letter in allowed:
+        return letter
+
+    compact_value = normalize_answer_text(raw)
+    if not compact_value:
+        return ""
+
+    exact_matches = [
+        option_letter
+        for option_letter, option_text in options_dict.items()
+        if normalize_answer_text(option_text) == compact_value
+    ]
+    if len(exact_matches) == 1:
+        return exact_matches[0]
+
+    if re.fullmatch(r"[-+]?\d+(?:\.\d+)?", compact_value):
+        token_matches = []
+        for option_letter, option_text in options_dict.items():
+            option_tokens = re.findall(r"[-+]?\d+(?:\.\d+)?", normalize_answer_text(option_text))
+            if compact_value in option_tokens:
+                token_matches.append(option_letter)
+        if len(token_matches) == 1:
+            return token_matches[0]
+
+    contains_matches = [
+        option_letter
+        for option_letter, option_text in options_dict.items()
+        if compact_value and compact_value in normalize_answer_text(option_text)
+    ]
+    if len(contains_matches) == 1:
+        return contains_matches[0]
+    return ""
+
+
+def normalize_answer_text(value: str) -> str:
+    return re.sub(r"[\s\u00a0，,。.;；:：()（）\\[\\]【】{}\"'`]+", "", value).upper()
 
 
 def parse_ai_confidence(parsed: Dict[str, Any]) -> Optional[float]:
@@ -717,7 +990,11 @@ class AssignmentAutoTester:
         elif self.config.get("browser_channel"):
             launch_options["channel"] = self.config["browser_channel"]
         self.browser = self.playwright.chromium.launch(**launch_options)
-        self.context = self.browser.new_context(viewport={"width": 1366, "height": 768}, locale="zh-CN")
+        self.context = self.browser.new_context(
+            viewport={"width": 1366, "height": 768},
+            locale="zh-CN",
+            device_scale_factor=self.config.get("device_scale_factor", 2.0),
+        )
         self.page = self.context.new_page()
         self.page.set_default_timeout(self.config["timeout_ms"])
         self.ensure_dialog_auto_accept()
@@ -873,6 +1150,11 @@ class AssignmentAutoTester:
             self.page.wait_for_url("**://i.chaoxing.com/**", timeout=self.config["timeout_ms"])
         except PlaywrightTimeoutError:
             LOGGER.info("Login did not visibly reach i.chaoxing.com before timeout; continuing with explicit Inbox navigation.")
+        except PlaywrightError as exc:
+            LOGGER.info(
+                "Login navigation wait was interrupted (%s); continuing with explicit Inbox navigation.",
+                exc,
+            )
         self.wait_for_page_settle("after login")
         return True
 
@@ -1010,9 +1292,9 @@ class AssignmentAutoTester:
             return False
         return any(keyword in normalized for keyword in self.config["inbox_keywords"])
 
-    def process_inbox_candidate(self, candidate: Dict[str, str]) -> bool:
+    def process_inbox_candidate(self, candidate: Dict[str, str]) -> str:
         if not self.page:
-            return False
+            return "failed"
 
         href = candidate.get("href", "")
         inbox_url = self.page.url
@@ -1021,7 +1303,7 @@ class AssignmentAutoTester:
         if not href:
             if not self.click_inbox_candidate_by_index(candidate.get("index", "")):
                 LOGGER.warning("Inbox 候选没有 href，且无法点击，跳过。")
-                return False
+                return "failed"
             LOGGER.info("Opened inbox candidate by clicking current Inbox item: %s", self.page.url)
         else:
             try:
@@ -1030,7 +1312,7 @@ class AssignmentAutoTester:
                 LOGGER.info("Opened inbox candidate page: %s", self.page.url)
             except PlaywrightError as exc:
                 LOGGER.warning("Failed to open inbox candidate href=%s reason=%s", href, exc)
-                return False
+                return "failed"
 
         extracted = self.extract_question()
         if not extracted and self.open_notice_assignment_attachment():
@@ -1039,26 +1321,38 @@ class AssignmentAutoTester:
         if not extracted:
             if self.is_completed_or_closed_page():
                 LOGGER.info("Detected completed/closed assignment page; skipping candidate gracefully.")
+                return "completed_or_closed"
+            if self.is_notice_only_page():
+                LOGGER.info("Detected notice-only assignment reminder with no actionable attachment; skipping candidate gracefully.")
+                return "notice_only"
             else:
-                LOGGER.info("No question DOM found on inbox candidate page; skipping candidate gracefully.")
-            return False
+                self.request_manual_halt("No question DOM found on inbox candidate page; treating as unresolved candidate.")
+                return "no_question"
 
+        completed_before = self.completed_assignments
         result = self.process_all_questions(first_extracted=extracted)
-        LOGGER.info("完成做题 dry-run: %s result=%s", time.strftime("%Y-%m-%d %H:%M:%S"), result)
+        LOGGER.info("完成候选处理: %s result=%s", time.strftime("%Y-%m-%d %H:%M:%S"), result)
         if self.halt_requested:
-            self.pause_for_low_confidence_halt()
-            return result
+            if self.config.get("skip_unanswerable_candidate"):
+                LOGGER.warning("Current candidate halted; returning to Inbox and continuing because ASSIGNMENT_SKIP_UNANSWERABLE_CANDIDATE=true.")
+                self.halt_requested = False
+            else:
+                self.pause_for_low_confidence_halt()
+                return "halt"
         try:
             self.page.goto(inbox_url, wait_until="domcontentloaded")
             self.wait_for_page_settle("return to inbox")
         except PlaywrightError as exc:
             LOGGER.warning("Failed returning to inbox url=%s reason=%s", inbox_url, exc)
-        return result
+        if result and self.completed_assignments > completed_before:
+            return "processed_completed"
+        return "processed" if result else "failed"
 
     def open_notice_assignment_attachment(self) -> bool:
         if not self.page:
             return False
 
+        attempted_urls = set()
         for frame in self.page.frames:
             try:
                 attachment_url = frame.evaluate(
@@ -1073,16 +1367,33 @@ class AssignmentAutoTester:
 
             if not isinstance(attachment_url, str) or not attachment_url.startswith("http"):
                 continue
+            if attachment_url in attempted_urls:
+                continue
+            attempted_urls.add(attachment_url)
 
             LOGGER.info("Found notice assignment attachment URL: %s", attachment_url)
-            try:
-                self.page.goto(attachment_url, wait_until="domcontentloaded")
-                self.wait_for_page_settle("notice assignment attachment")
-                LOGGER.info("Opened notice assignment attachment: %s", self.page.url)
-                return True
-            except PlaywrightError as exc:
-                LOGGER.warning("Failed opening notice assignment attachment: %s", exc)
-                return False
+            attempts = max(1, int(self.config.get("navigation_retries", 2)) + 1)
+            retry_delay = max(0.0, float(self.config.get("navigation_retry_delay_seconds", 3.0)))
+            timeout_ms = max(30_000, int(self.config.get("timeout_ms", 15_000)) * 2)
+            for attempt in range(1, attempts + 1):
+                try:
+                    self.page.goto(attachment_url, wait_until="domcontentloaded", timeout=timeout_ms)
+                    self.wait_for_page_settle("notice assignment attachment")
+                    LOGGER.info("Opened notice assignment attachment: %s", self.page.url)
+                    return True
+                except PlaywrightError as exc:
+                    LOGGER.warning(
+                        "Open notice assignment attachment attempt %s/%s failed: %s",
+                        attempt,
+                        attempts,
+                        exc,
+                    )
+                    self.wait_for_page_settle("notice assignment attachment after failed navigation")
+                    if self.extract_question():
+                        LOGGER.info("Notice assignment attachment reached a question page after navigation warning: %s", self.page.url)
+                        return True
+                    if attempt < attempts and retry_delay:
+                        self.page.wait_for_timeout(int(retry_delay * attempt * 1000))
         return False
 
     def click_inbox_candidate_by_index(self, index_value: str) -> bool:
@@ -1111,6 +1422,13 @@ class AssignmentAutoTester:
         if not self.page:
             return False
 
+        current_url = self.page.url
+        parsed_url = urlparse(current_url)
+        path = parsed_url.path.lower()
+        if "/mooc2/work/view" in path or "/mooc2/work/prompt" in path:
+            LOGGER.info("Detected completed/closed assignment page by URL: %s", current_url)
+            return True
+
         keywords = ("已完成", "已提交", "已批阅", "作业已完成", "已结束", "暂无可做", "不能作答")
         roots = [self.page, *self.page.frames]
         for root in roots:
@@ -1120,6 +1438,25 @@ class AssignmentAutoTester:
                 continue
             normalized = re.sub(r"\s+", "", body_text)
             if any(keyword in normalized for keyword in keywords):
+                return True
+        return False
+
+    def is_notice_only_page(self) -> bool:
+        if not self.page:
+            return False
+        parsed_url = urlparse(self.page.url)
+        if not parsed_url.hostname or not parsed_url.hostname.endswith("notice.chaoxing.com"):
+            return False
+        if "/pc/notice/" not in parsed_url.path.lower():
+            return False
+        roots = [self.page, *self.page.frames]
+        for root in roots:
+            try:
+                body_text = root.locator("body").inner_text(timeout=2_000)
+            except (PlaywrightTimeoutError, PlaywrightError):
+                continue
+            normalized = re.sub(r"\s+", "", body_text)
+            if "通知" in normalized and ("评论" in normalized or "收件人" in normalized):
                 return True
         return False
 
@@ -1185,10 +1522,16 @@ class AssignmentAutoTester:
 
         option_items = container.locator(self.selectors["option_item"]).all()
         if not option_items:
-            text_control = self.find_text_answer_control(container)
-            if text_control:
-                LOGGER.info("[探测到简答题] found text input control")
-                return QuestionData(question_text, {}, "text", {"__text__": text_control}, media)
+            text_controls = self.find_text_answer_controls(container)
+            if text_controls:
+                blank_count = len(text_controls)
+                LOGGER.info("[探测到简答题] found %s text input control(s)", blank_count)
+                if blank_count > 1:
+                    question_text = (
+                        f"{question_text}\n填空数量：{blank_count}。"
+                        "请按第1空到最后一空的顺序返回 answer 数组。"
+                    )
+                return QuestionData(question_text, {}, "text", text_controls, media)
             option_items = self.find_all_locators(self.selectors["option_item"], timeout_ms=3_000)
 
         max_options = int(self.config.get("max_options_per_question", 12))
@@ -1311,7 +1654,8 @@ class AssignmentAutoTester:
     def capture_question_media(self, container: Locator) -> List[QuestionMedia]:
         if not self.config.get("ai_enable_images"):
             return []
-        if int(self.config.get("ai_max_images_per_question", 1)) <= 0:
+        max_images = int(self.config.get("ai_max_images_per_question", 1))
+        if max_images <= 0:
             return []
 
         try:
@@ -1320,6 +1664,67 @@ class AssignmentAutoTester:
             media_nodes = 0
         if media_nodes <= 0:
             return []
+
+        max_bytes = int(self.config.get("ai_max_image_bytes", 1_500_000))
+        captured: List[QuestionMedia] = []
+        media_locator = container.locator(self.selectors["question_media"])
+        for index in range(min(media_nodes, max_images)):
+            try:
+                media_node = media_locator.nth(index)
+                action_timeout = max(1_000, int(self.config.get("action_timeout_ms", 5_000)))
+                media_node.scroll_into_view_if_needed(timeout=action_timeout)
+                media_node.wait_for(state="visible", timeout=action_timeout)
+                media_node.evaluate(
+                    """element => {
+                        if (element.tagName !== "IMG") {
+                            return true;
+                        }
+                        const img = element;
+                        if (img.complete && img.naturalWidth > 0 && img.naturalHeight > 0) {
+                            return true;
+                        }
+                        return new Promise((resolve, reject) => {
+                            const timeout = setTimeout(() => reject(new Error("image load timeout")), 5000);
+                            img.addEventListener("load", () => {
+                                clearTimeout(timeout);
+                                resolve(true);
+                            }, { once: true });
+                            img.addEventListener("error", () => {
+                                clearTimeout(timeout);
+                                reject(new Error("image load error"));
+                            }, { once: true });
+                        });
+                    }""",
+                    timeout=action_timeout + 5_000,
+                )
+                box = media_node.bounding_box(timeout=action_timeout)
+                if not box or box.get("width", 0) < 10 or box.get("height", 0) < 10:
+                    continue
+                png_bytes = media_node.screenshot(
+                    type="png",
+                    timeout=action_timeout,
+                )
+            except (PlaywrightTimeoutError, PlaywrightError) as exc:
+                LOGGER.warning("Question media node screenshot failed; trying next/fallback. index=%s reason=%s", index + 1, exc)
+                continue
+            if len(png_bytes) > max_bytes:
+                LOGGER.warning(
+                    "Question media node screenshot too large; skipping. index=%s bytes=%s max=%s",
+                    index + 1,
+                    len(png_bytes),
+                    max_bytes,
+                )
+                continue
+            data_url = "data:image/png;base64," + base64.b64encode(png_bytes).decode("ascii")
+            LOGGER.info(
+                "Question media captured: media_nodes=%s screenshot_bytes=%s source=media-node-%s",
+                media_nodes,
+                len(png_bytes),
+                index + 1,
+            )
+            captured.append(QuestionMedia(f"media-node-{index + 1}", data_url, len(png_bytes), "screenshot"))
+        if captured:
+            return captured
 
         try:
             png_bytes = container.screenshot(
@@ -1330,7 +1735,6 @@ class AssignmentAutoTester:
             LOGGER.warning("Question media screenshot failed; falling back to text-only. reason=%s", exc)
             return []
 
-        max_bytes = int(self.config.get("ai_max_image_bytes", 1_500_000))
         if len(png_bytes) > max_bytes:
             LOGGER.warning(
                 "Question media screenshot too large; falling back to text-only. bytes=%s max=%s media_nodes=%s",
@@ -1349,21 +1753,131 @@ class AssignmentAutoTester:
         return [QuestionMedia("question-container", data_url, len(png_bytes), "screenshot")]
 
     def find_text_answer_control(self, container: Locator) -> Optional[Locator]:
-        try:
-            controls = container.locator(self.selectors["text_answer_input"]).all()
-        except PlaywrightError:
-            return None
+        controls = self.find_text_answer_controls(container)
+        return controls.get("__text_1__") or controls.get("__text__")
 
-        for control in controls:
+    def find_text_answer_controls(self, container: Locator) -> Dict[str, Locator]:
+        try:
+            raw_controls = container.locator(self.selectors["text_answer_input"]).all()
+        except PlaywrightError:
+            return {}
+
+        eligible: List[Locator] = []
+        visible: List[Locator] = []
+        for control in raw_controls:
             try:
                 input_type = (control.get_attribute("type") or "").lower()
                 if input_type in {"hidden", "submit", "button", "checkbox", "radio"}:
                     continue
+                eligible.append(control)
                 if control.is_visible():
-                    return control
+                    visible.append(control)
             except PlaywrightError:
                 continue
-        return controls[0] if controls else None
+
+        selected = visible or eligible
+        selected = sorted(
+            enumerate(selected, start=1),
+            key=lambda item: self.text_answer_control_sort_key(item[1], item[0]),
+        )
+        selected_controls = [control for _, control in selected]
+        return {f"__text_{index}__": control for index, control in enumerate(selected_controls, start=1)}
+
+    def text_answer_control_sort_key(self, control: Locator, fallback_index: int) -> Tuple[int, float, float, int, int]:
+        try:
+            key = control.evaluate(
+                """(el, fallbackIndex) => {
+                    const rectFor = (node) => {
+                        if (!node || !node.getBoundingClientRect) {
+                            return null;
+                        }
+                        const rect = node.getBoundingClientRect();
+                        if (rect.width <= 0 || rect.height <= 0) {
+                            return null;
+                        }
+                        return { top: rect.top, left: rect.left };
+                    };
+                    const cssEscape = (value) => {
+                        if (window.CSS && window.CSS.escape) {
+                            return window.CSS.escape(value);
+                        }
+                        return String(value).replace(/["\\\\]/g, "\\\\$&");
+                    };
+                    const candidates = [];
+                    const id = el.id || "";
+                    if (id) {
+                        const escapedId = cssEscape(id);
+                        for (const selector of [
+                            `#${escapedId}_iframe`,
+                            `[data-editor-id="${escapedId}"]`,
+                            `[data-control-id="${escapedId}"]`,
+                            `[for="${escapedId}"]`,
+                        ]) {
+                            const node = document.querySelector(selector);
+                            if (node) {
+                                candidates.push(node);
+                            }
+                        }
+                        if (window.UE) {
+                            try {
+                                const editor = window.UE.getEditor(id);
+                                if (editor) {
+                                    if (editor.container) {
+                                        candidates.push(editor.container);
+                                    }
+                                    if (editor.iframe) {
+                                        candidates.push(editor.iframe);
+                                    }
+                                }
+                            } catch (error) {
+                                // UEditor may throw while creating missing editors; ignore for ordering.
+                            }
+                        }
+                    }
+                    candidates.push(el);
+                    for (const node of candidates) {
+                        const rect = rectFor(node);
+                        if (rect) {
+                            return {
+                                visibleRank: 0,
+                                top: rect.top,
+                                left: rect.left,
+                                ordinal: Number.MAX_SAFE_INTEGER,
+                                fallbackIndex,
+                            };
+                        }
+                    }
+
+                    const attrs = [
+                        el.id || "",
+                        el.name || "",
+                        el.getAttribute("data-id") || "",
+                        el.getAttribute("data-index") || "",
+                        el.getAttribute("data-sort") || "",
+                    ].join(" ");
+                    const numbers = attrs.match(/\\d+/g) || [];
+                    const ordinal = numbers.length ? Number(numbers[numbers.length - 1]) : Number.MAX_SAFE_INTEGER;
+                    return {
+                        visibleRank: 1,
+                        top: Number.MAX_SAFE_INTEGER,
+                        left: Number.MAX_SAFE_INTEGER,
+                        ordinal,
+                        fallbackIndex,
+                    };
+                }""",
+                fallback_index,
+                timeout=self.config.get("action_timeout_ms", 5_000),
+            )
+            return (
+                int(key.get("visibleRank", 1)),
+                float(key.get("top", 9_999_999)),
+                float(key.get("left", 9_999_999)),
+                int(key.get("ordinal", 9_999_999)),
+                int(key.get("fallbackIndex", fallback_index)),
+            )
+        except (PlaywrightTimeoutError, PlaywrightError, TypeError, ValueError) as exc:
+            LOGGER.warning("Text answer control ordering fallback used: %s", exc)
+            return (1, 9_999_999.0, 9_999_999.0, 9_999_999, fallback_index)
 
     def extract_option_text(self, item: Locator, letter: str) -> str:
         try:
@@ -1404,31 +1918,143 @@ class AssignmentAutoTester:
                 LOGGER.info("Dry-run: would click answer %s", letter)
                 selected_any = True
                 continue
-            selected_any = self.safe_click(control, f"answer {letter}") or selected_any
+            if not self.safe_click(control, f"answer {letter}"):
+                continue
+            if self.verify_answer_control_selected(control, f"answer {letter}"):
+                selected_any = True
+            else:
+                LOGGER.warning("Answer %s click did not produce a verifiable selected state.", letter)
         return selected_any
 
+    def verify_answer_control_selected(self, control: Locator, description: str) -> bool:
+        try:
+            selected = control.evaluate(
+                """el => {
+                    const truthy = value => String(value || "").toLowerCase() === "true";
+                    const hasSelectedClass = node => {
+                        if (!node || !node.className) {
+                            return false;
+                        }
+                        const className = String(node.className).toLowerCase();
+                        return /(^|[-_\\s])(checked|selected|active|current|cur|on|choose|chosen|check)([-_\\s]|$)/.test(className);
+                    };
+                    const isCheckedInput = node => {
+                        return node
+                            && node.matches
+                            && node.matches("input[type='radio'], input[type='checkbox']")
+                            && node.checked;
+                    };
+                    if (isCheckedInput(el) || truthy(el.getAttribute("aria-checked")) || hasSelectedClass(el)) {
+                        return true;
+                    }
+                    const input = el.querySelector && el.querySelector("input[type='radio'], input[type='checkbox']");
+                    if (isCheckedInput(input)) {
+                        return true;
+                    }
+                    const ariaNode = el.querySelector && el.querySelector("[aria-checked='true']");
+                    if (ariaNode) {
+                        return true;
+                    }
+                    let node = el.parentElement;
+                    let depth = 0;
+                    while (node && depth < 4) {
+                        if (hasSelectedClass(node)) {
+                            return true;
+                        }
+                        node = node.parentElement;
+                        depth += 1;
+                    }
+                    return false;
+                }""",
+                timeout=self.config.get("action_timeout_ms", 5_000),
+            )
+            if selected:
+                return True
+            LOGGER.warning("Selected-state verification failed for %s", description)
+            return False
+        except (PlaywrightTimeoutError, PlaywrightError) as exc:
+            LOGGER.warning("Selected-state verification failed for %s: %s", description, exc)
+            return False
+
     def apply_text_answer(self, answer_text: str, controls: Dict[str, Locator]) -> bool:
+        return self.apply_text_answers([answer_text], controls)
+
+    def apply_text_answers(self, answers: List[str], controls: Dict[str, Locator]) -> bool:
+        text_controls = [
+            (key, controls[key])
+            for key in sorted(controls)
+            if key.startswith("__text_")
+        ]
+        if not text_controls and "__text__" in controls:
+            text_controls = [("__text__", controls["__text__"])]
+        if not text_controls:
+            LOGGER.warning("Text question has no input control; skipping text answer.")
+            return False
+
+        if len(answers) != len(text_controls):
+            LOGGER.warning(
+                "Text answer count mismatch: answers=%s expected=%s",
+                answers,
+                len(text_controls),
+            )
+            return False
+
+        applied = 0
+        for index, ((_, control), answer_text) in enumerate(zip(text_controls, answers), start=1):
+            if self.apply_single_text_answer(str(answer_text), control, index):
+                applied += 1
+        return applied == len(text_controls)
+
+    def apply_single_text_answer(self, answer_text: str, control: Locator, index: int) -> bool:
         answer_text = answer_text.strip()
         if not answer_text:
             LOGGER.warning("Text answer is empty; skipping text input.")
             return False
 
-        control = controls.get("__text__")
-        if not control:
-            LOGGER.warning("Text question has no input control; skipping text answer.")
-            return False
-
-        LOGGER.info("[探测到简答题] 准备填入内容：%s", answer_text)
+        LOGGER.info("[探测到简答题] 准备填入第 %s 空：%s", index, answer_text)
         if not self.actions_allowed():
             return True
 
         try:
             self.random_delay()
-            control.fill(answer_text, timeout=self.config.get("action_timeout_ms", 5_000))
-            LOGGER.info("Filled text answer")
-            return True
+            if control.is_visible(timeout=500):
+                control.fill(answer_text, timeout=self.config.get("action_timeout_ms", 5_000))
+                LOGGER.info("Filled text answer #%s", index)
+                return True
+            LOGGER.info("Text answer #%s control is hidden; using JS value fallback.", index)
         except (PlaywrightTimeoutError, PlaywrightError) as exc:
-            LOGGER.warning("Fill text answer failed: %s", exc)
+            LOGGER.warning("Fill text answer #%s precheck/fill failed; trying JS value fallback: %s", index, exc)
+        try:
+            control.evaluate(
+                """(el, value) => {
+                    el.value = value;
+                    el.textContent = value;
+                    el.dispatchEvent(new Event("input", { bubbles: true }));
+                    el.dispatchEvent(new Event("change", { bubbles: true }));
+                    if (window.UE && el.id) {
+                        try {
+                            const editor = window.UE.getEditor(el.id);
+                            if (editor && editor.ready) {
+                                editor.ready(() => {
+                                    editor.setContent(value || "");
+                                    editor.sync();
+                                });
+                            } else if (editor) {
+                                editor.setContent(value || "");
+                                editor.sync();
+                            }
+                        } catch (error) {
+                            console.log(error);
+                        }
+                    }
+                }""",
+                answer_text,
+                timeout=self.config.get("action_timeout_ms", 5_000),
+            )
+            LOGGER.info("Filled hidden text answer #%s via JS fallback", index)
+            return True
+        except (PlaywrightTimeoutError, PlaywrightError) as fallback_exc:
+            LOGGER.warning("Fill text answer #%s JS fallback failed: %s", index, fallback_exc)
             return False
 
     def click_next_or_submit(self) -> bool:
@@ -1511,11 +2137,42 @@ class AssignmentAutoTester:
             self.page.wait_for_timeout(max(0, int(self.config.get("submit_after_click_wait_ms", 500))))
             LOGGER.info("[Action] 提交动作已完成，等待页面稳定...")
             self.wait_for_page_settle("submit")
+            if not self.wait_for_submission_completion():
+                raise RuntimeError(f"Submit completion was not verified after click. url={self.page.url}")
             self.completed_assignments += 1
             self.inspect_score_after_submit()
             return True
         except (PlaywrightTimeoutError, PlaywrightError) as exc:
             raise RuntimeError(f"Submit action failed: {exc}") from exc
+
+    def wait_for_submission_completion(self) -> bool:
+        if not self.page:
+            return False
+        deadline = time.monotonic() + max(1_000, int(self.config.get("submit_completion_timeout_ms", 12_000))) / 1000
+        while time.monotonic() < deadline:
+            if self.is_completed_or_closed_page():
+                LOGGER.info("[Action] 提交完成已通过页面完成态验证。")
+                return True
+            if self.extract_score_info():
+                LOGGER.info("[Action] 提交完成已通过分数信息验证。")
+                return True
+            try:
+                submit_button = self.find_locator(
+                    self.selectors["submit_button"],
+                    state="visible",
+                    timeout_ms=300,
+                    log_missing=False,
+                )
+                if not submit_button and "dowork" not in (self.page.url or "").lower():
+                    LOGGER.info("[Action] 提交完成已通过提交按钮消失/URL 变化验证。")
+                    return True
+            except PlaywrightError:
+                if "dowork" not in (self.page.url or "").lower():
+                    LOGGER.info("[Action] 提交完成已通过 URL 变化验证。")
+                    return True
+            self.page.wait_for_timeout(500)
+        LOGGER.warning("[Action] 提交完成验证失败，当前 url=%s", self.page.url)
+        return False
 
     def handle_custom_submit_confirmation(
         self,
@@ -1617,8 +2274,16 @@ class AssignmentAutoTester:
         options = extracted.options
         question_type = extracted.question_type
         controls = extracted.controls
+        expected_answer_count = self.expected_answer_count(extracted)
         LOGGER.info("Question type=%s text=%s", question_type, question_text[:80])
-        answers = self.decide_answers(question_text, options, question_type, extracted.media, question_index=None)
+        answers = self.decide_answers(
+            question_text,
+            options,
+            question_type,
+            extracted.media,
+            question_index=None,
+            sub_question_count=expected_answer_count,
+        )
         if not answers:
             LOGGER.warning("No usable AI answer; skipping question")
             if self.halt_requested:
@@ -1626,7 +2291,7 @@ class AssignmentAutoTester:
             return self.click_next_or_submit()
 
         if question_type == "text":
-            self.apply_text_answer(answers[0], controls)
+            self.apply_text_answers(answers, controls)
         elif question_type == "shared_options":
             self.apply_shared_option_answers(answers, controls, len(extracted.sub_questions or []))
         else:
@@ -1673,6 +2338,7 @@ class AssignmentAutoTester:
             options = extracted.options
             question_type = extracted.question_type
             controls = extracted.controls
+            expected_answer_count = self.expected_answer_count(extracted)
             processed += 1
             LOGGER.info("Question #%s type=%s text=%s", index, question_type, question_text[:80])
             answers = self.decide_answers(
@@ -1681,6 +2347,7 @@ class AssignmentAutoTester:
                 question_type,
                 extracted.media,
                 question_index=index,
+                sub_question_count=expected_answer_count,
             )
             if not answers:
                 LOGGER.warning("Question #%s has no usable answer; skipping.", index)
@@ -1693,7 +2360,7 @@ class AssignmentAutoTester:
                     return False
                 continue
             if question_type == "text":
-                applied = self.apply_text_answer(answers[0], controls)
+                applied = self.apply_text_answers(answers, controls)
             elif question_type == "shared_options":
                 applied = self.apply_shared_option_answers(answers, controls, len(extracted.sub_questions or []))
             else:
@@ -1741,6 +2408,7 @@ class AssignmentAutoTester:
         question_type: str,
         media: Optional[List[QuestionMedia]] = None,
         question_index: Optional[int] = None,
+        sub_question_count: int = 0,
     ) -> Optional[List[str]]:
         if self.live_ai_allowed():
             decision = ask_ai_brain_decision(question_text, options, question_type, self.config, media)
@@ -1750,16 +2418,36 @@ class AssignmentAutoTester:
             if decision.low_confidence and self.config.get("stop_on_low_confidence"):
                 self.request_low_confidence_halt(decision, question_text)
                 return None
-            return decision.answers
+            answers = decision.answers
+            if question_type == "text" and sub_question_count > 1 and len(answers) == 1:
+                split_answers = [
+                    item.strip()
+                    for item in re.split(r"[,，;；\n]+", answers[0])
+                    if item.strip()
+                ]
+                if len(split_answers) == sub_question_count:
+                    answers = split_answers
+            return answers
 
         first_option = next(iter(options), None)
         if question_type == "text":
+            count = max(1, sub_question_count)
             LOGGER.info(
                 "Dry-run real-site mode: live AI disabled; would send text question to AI in authorized staging. "
-                "Using deterministic placeholder text for fill-path test."
+                "Using deterministic placeholder text for %s fill path(s).",
+                count,
             )
-            return ["dry-run text answer placeholder"]
+            return ["dry-run text answer placeholder"] * count
         if first_option:
+            if question_type == "shared_options":
+                count = max(1, sub_question_count)
+                LOGGER.info(
+                    "Dry-run real-site mode: live AI disabled; would send shared-option question to AI in authorized staging. "
+                    "Using deterministic mock answer %s repeated %s time(s) for mapping test.",
+                    first_option,
+                    count,
+                )
+                return [first_option] * count
             LOGGER.info(
                 "Dry-run real-site mode: live AI disabled; would send question to AI in authorized staging. "
                 "Using deterministic mock answer %s for mapping test.",
@@ -1767,6 +2455,15 @@ class AssignmentAutoTester:
             )
             return [first_option]
         return None
+
+    def expected_answer_count(self, extracted: QuestionData) -> int:
+        if extracted.question_type == "shared_options":
+            return len(extracted.sub_questions or [])
+        if extracted.question_type == "text":
+            return sum(1 for key in extracted.controls if key.startswith("__text_")) or (
+                1 if "__text__" in extracted.controls else 0
+            )
+        return 0
 
     def record_ai_decision_risk(
         self,
@@ -1838,8 +2535,15 @@ class AssignmentAutoTester:
             if not control:
                 LOGGER.warning("No shared-option control for sub-question %s answer %s", index, letter)
                 continue
-            if self.safe_click(control, f"shared-option #{index} answer {letter}"):
+            if not self.actions_allowed():
+                LOGGER.info("Dry-run: would click shared-option #%s answer %s", index, letter)
                 applied += 1
+                continue
+            description = f"shared-option #{index} answer {letter}"
+            if self.safe_click(control, description) and self.verify_answer_control_selected(control, description):
+                applied += 1
+            else:
+                LOGGER.warning("Shared-option #%s answer %s did not produce a verifiable selected state.", index, letter)
         return applied == sub_question_count
 
     def request_low_confidence_halt(self, decision: AIAnswerResult, question_text: str) -> None:
@@ -1899,6 +2603,7 @@ class AssignmentAutoTester:
         patterns = [
             r"(?:成绩|得分|分数|score)[:：]?\s*(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)",
             r"(?:成绩|得分|分数|score)[:：]?\s*(\d+(?:\.\d+)?)\s*分",
+            r"(?:^|\s)(\d+(?:\.\d+)?)\s*分\s*提交时间",
             r"(?:总分|满分)[:：]?\s*(\d+(?:\.\d+)?).*?(?:得分|成绩|分数)[:：]?\s*(\d+(?:\.\d+)?)",
             r"(?:得分|成绩|分数)[:：]?\s*(\d+(?:\.\d+)?).*?(?:总分|满分)[:：]?\s*(\d+(?:\.\d+)?)",
         ]
@@ -1908,7 +2613,7 @@ class AssignmentAutoTester:
                 continue
             first = float(match.group(1))
             second = float(match.group(2)) if len(match.groups()) >= 2 else 100.0
-            if index == 2:
+            if index == 3:
                 return second, first
             return first, second
         return None
@@ -1967,6 +2672,9 @@ class AssignmentAutoTester:
                 candidates = self.scan_inbox()
                 if not candidates:
                     LOGGER.info("扫描完毕，暂无作业，准备休眠")
+                    if self.config.get("exit_when_no_unsubmitted"):
+                        LOGGER.info("ASSIGNMENT_EXIT_WHEN_NO_UNSUBMITTED=true; exiting because no assignment candidates were found.")
+                        return
                 max_candidates = self.config.get("max_candidates_per_round", 0)
                 candidates_to_process = candidates[:max_candidates] if max_candidates else candidates
                 if max_candidates and len(candidates) > max_candidates:
@@ -1975,12 +2683,26 @@ class AssignmentAutoTester:
                         max_candidates,
                         len(candidates) - max_candidates,
                     )
+                outcomes: List[str] = []
                 for candidate in candidates_to_process:
-                    self.process_inbox_candidate(candidate)
+                    outcome = self.process_inbox_candidate(candidate)
+                    outcomes.append(outcome)
+                    LOGGER.info("Candidate outcome: %s", outcome)
                     if self.halt_requested:
                         LOGGER.warning("Monitor stopped because low-confidence halt was requested: %s", self.halt_reason)
                         return
                 LOGGER.info("Monitor scan round %s completed at %s", rounds_completed, time.strftime("%Y-%m-%d %H:%M:%S"))
+
+                if (
+                    self.config.get("exit_when_no_unsubmitted")
+                    and candidates_to_process
+                    and all(outcome in {"completed_or_closed", "notice_only", "processed_completed"} for outcome in outcomes)
+                    and (not max_candidates or len(candidates) <= max_candidates)
+                ):
+                    LOGGER.info(
+                        "ASSIGNMENT_EXIT_WHEN_NO_UNSUBMITTED=true; all scanned assignment candidates are completed/closed."
+                    )
+                    return
 
                 max_rounds = self.config.get("max_scan_rounds", 0)
                 if max_rounds and rounds_completed >= max_rounds:
