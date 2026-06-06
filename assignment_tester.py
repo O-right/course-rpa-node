@@ -5,6 +5,7 @@ import os
 import random
 import re
 import time
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -86,6 +87,16 @@ CONFIG: Dict[str, Any] = {
     "submit_within_risk_budget": env_flag("ASSIGNMENT_SUBMIT_WITHIN_RISK_BUDGET", "true"),
     "stop_on_low_score": env_flag("ASSIGNMENT_STOP_ON_LOW_SCORE", "true"),
     "min_acceptable_score": env_float("ASSIGNMENT_MIN_ACCEPTABLE_SCORE", 80.0),
+    "require_manual_review_before_submit": env_flag(
+        "ASSIGNMENT_REQUIRE_MANUAL_REVIEW_BEFORE_SUBMIT",
+        "true",
+    ),
+    "review_output_dir": os.getenv("ASSIGNMENT_REVIEW_OUTPUT_DIR", "logs/reviews"),
+    "reviewed_answer_file": os.getenv("ASSIGNMENT_REVIEWED_ANSWER_FILE", ""),
+    "retry_with_visible_correct_answers": env_flag(
+        "ASSIGNMENT_RETRY_WITH_VISIBLE_CORRECT_ANSWERS",
+        "true",
+    ),
     "stop_on_unanswerable": env_flag("ASSIGNMENT_STOP_ON_UNANSWERABLE", "true"),
     "skip_unanswerable_candidate": env_flag("ASSIGNMENT_SKIP_UNANSWERABLE_CANDIDATE", "false"),
     "server_mode": env_flag("ASSIGNMENT_SERVER_MODE"),
@@ -441,7 +452,16 @@ def request_ai_answers(
     if not normalized:
         raise ValueError(f"AI {label} response did not contain usable answer")
     confidence = parse_ai_confidence(parsed)
+    parse_warning = str(parsed.get("_parse_warning") or "").strip()
+    unusable_confidence = has_unusable_ai_confidence(parsed, confidence)
     low_confidence, reason = evaluate_ai_confidence(cfg, parsed, confidence)
+    if parse_warning:
+        low_confidence = True
+        reason = f"{parse_warning}; {reason}" if reason else parse_warning
+    if unusable_confidence:
+        low_confidence = True
+        warning = "AI confidence field was present but could not be parsed"
+        reason = f"{warning}; {reason}" if reason else warning
     evidence = str(parsed.get("evidence") or "").strip()
     if evidence:
         reason = f"{reason}; evidence={evidence}" if reason else f"evidence={evidence}"
@@ -822,7 +842,27 @@ def parse_ai_response_json(content: str) -> Dict[str, Any]:
             continue
         if isinstance(parsed, dict):
             return parsed
+    recovered = recover_ai_answer_from_malformed_json(stripped)
+    if recovered is not None:
+        recovered["_parse_warning"] = "recovered answer from malformed AI JSON"
+        return recovered
     raise json.JSONDecodeError("AI response does not contain a JSON object", content, 0)
+
+
+def recover_ai_answer_from_malformed_json(content: str) -> Optional[Dict[str, Any]]:
+    """Recover a valid answer value when nearby metadata breaks JSON parsing."""
+    decoder = json.JSONDecoder()
+    answer_field = re.search(r"""(?:"answer"|'answer')\s*:""", content, flags=re.IGNORECASE)
+    if not answer_field:
+        return None
+
+    try:
+        answer_value, _ = decoder.raw_decode(content[answer_field.end() :].lstrip())
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(answer_value, (str, list, dict)):
+        return None
+    return {"answer": answer_value}
 
 
 def normalize_ai_answers(answers: Any, question_type: str, options_dict: Dict[str, str]) -> List[str]:
@@ -927,13 +967,30 @@ def parse_ai_confidence(parsed: Dict[str, Any]) -> Optional[float]:
         if percent_match:
             value = float(percent_match.group(1)) / 100
         else:
-            value = float(normalized)
+            try:
+                value = float(normalized)
+            except ValueError:
+                return None
     else:
         return None
 
     if value > 1 and value <= 100:
         value = value / 100
     return max(0.0, min(1.0, value))
+
+
+def has_unusable_ai_confidence(parsed: Dict[str, Any], confidence: Optional[float]) -> bool:
+    if confidence is not None:
+        return False
+    if "confidence" in parsed:
+        raw_value = parsed.get("confidence")
+    elif "confidence_score" in parsed:
+        raw_value = parsed.get("confidence_score")
+    else:
+        return False
+    if raw_value is None:
+        return False
+    return bool(str(raw_value).strip())
 
 
 def parse_boolish(value: Any) -> bool:
@@ -944,6 +1001,32 @@ def parse_boolish(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on", "low", "uncertain", "不确定"}
     return False
+
+
+def compact_page_text(text: str) -> str:
+    return re.sub(r"\s+", "", text or "")
+
+
+def has_low_score_retry_marker(text: str) -> bool:
+    compacted = compact_page_text(text)
+    low_score_markers = ("未达到及格线", "未达及格线", "未及格", "不及格")
+    retry_markers = ("请重做", "重做", "重新作答", "重新提交")
+    return any(marker in compacted for marker in low_score_markers) and any(
+        marker in compacted for marker in retry_markers
+    )
+
+
+def has_submitted_result_markers(text: str) -> bool:
+    compacted = compact_page_text(text)
+    has_answer_review = "我的答案" in compacted and (
+        "正确答案" in compacted or "答案解析" in compacted
+    )
+    has_grading_context = "作答时间" in compacted and (
+        "我的答案" in compacted or "正确答案" in compacted
+    )
+    return has_answer_review or has_grading_context or (
+        has_low_score_retry_marker(text) and ("我的答案" in compacted or "正确答案" in compacted)
+    )
 
 
 def evaluate_ai_confidence(
@@ -975,6 +1058,8 @@ class AssignmentAutoTester:
         self._halt_pause_handled = False
         self.completed_assignments = 0
         self.assignment_risks: List[Dict[str, Any]] = []
+        self._reviewed_answer_map: Optional[Dict[int, List[str]]] = None
+        self.current_candidate_title = ""
         self.browser = None
         self.context = None
 
@@ -1292,6 +1377,56 @@ class AssignmentAutoTester:
             return False
         return any(keyword in normalized for keyword in self.config["inbox_keywords"])
 
+    def iter_body_texts(self, timeout_ms: int = 2_000) -> List[str]:
+        if not self.page:
+            return []
+        texts: List[str] = []
+        for root in [self.page, *self.page.frames]:
+            try:
+                texts.append(root.locator("body").inner_text(timeout=timeout_ms))
+            except (PlaywrightTimeoutError, PlaywrightError):
+                continue
+        return texts
+
+    def is_submitted_result_page(self) -> bool:
+        for body_text in self.iter_body_texts():
+            if has_submitted_result_markers(body_text):
+                LOGGER.info("Detected submitted assignment result page by answer/result markers.")
+                return True
+        return False
+
+    def extract_low_score_retry_marker(self) -> Optional[str]:
+        for body_text in self.iter_body_texts():
+            if has_low_score_retry_marker(body_text):
+                return re.sub(r"\s+", " ", body_text).strip()[:200]
+        return None
+
+    def handle_submitted_result_candidate(self, inbox_url: str) -> Optional[str]:
+        if not self.is_submitted_result_page():
+            return None
+
+        LOGGER.info("Detected already-submitted result page; inspecting score before skipping candidate.")
+        if self.config.get("retry_with_visible_correct_answers") and self.extract_low_score_retry_marker():
+            completed_before = self.completed_assignments
+            result = self.retry_submitted_result_page_with_visible_correct_answers()
+            LOGGER.info("完成候选处理: %s result=%s", time.strftime("%Y-%m-%d %H:%M:%S"), result)
+            if self.halt_requested:
+                self.pause_for_low_confidence_halt()
+                return "halt"
+            try:
+                self.page.goto(inbox_url, wait_until="domcontentloaded")
+                self.wait_for_page_settle("return to inbox")
+            except PlaywrightError as exc:
+                LOGGER.warning("Failed returning to inbox url=%s reason=%s", inbox_url, exc)
+            if result and self.completed_assignments > completed_before:
+                return "processed_completed"
+            return "processed" if result else "failed"
+        self.inspect_score_after_submit()
+        if self.halt_requested:
+            self.pause_for_low_confidence_halt()
+            return "halt"
+        return "completed_or_closed"
+
     def process_inbox_candidate(self, candidate: Dict[str, str]) -> str:
         if not self.page:
             return "failed"
@@ -1299,6 +1434,7 @@ class AssignmentAutoTester:
         href = candidate.get("href", "")
         inbox_url = self.page.url
         self.assignment_risks = []
+        self.current_candidate_title = candidate.get("title", "")
         LOGGER.info("开始处理 Inbox 作业候选: %s", time.strftime("%Y-%m-%d %H:%M:%S"))
         if not href:
             if not self.click_inbox_candidate_by_index(candidate.get("index", "")):
@@ -1314,9 +1450,22 @@ class AssignmentAutoTester:
                 LOGGER.warning("Failed to open inbox candidate href=%s reason=%s", href, exc)
                 return "failed"
 
+        extracted: Optional[QuestionData] = None
+        attachment_opened = self.open_notice_assignment_attachment()
+        submitted_result = self.handle_submitted_result_candidate(inbox_url)
+        if submitted_result:
+            return submitted_result
+
         extracted = self.extract_question()
-        if not extracted and self.open_notice_assignment_attachment():
+        if not extracted and not attachment_opened and self.open_notice_assignment_attachment():
+            submitted_result = self.handle_submitted_result_candidate(inbox_url)
+            if submitted_result:
+                return submitted_result
             extracted = self.extract_question()
+
+        submitted_result = self.handle_submitted_result_candidate(inbox_url)
+        if submitted_result:
+            return submitted_result
 
         if not extracted:
             if self.is_completed_or_closed_page():
@@ -1430,13 +1579,8 @@ class AssignmentAutoTester:
             return True
 
         keywords = ("已完成", "已提交", "已批阅", "作业已完成", "已结束", "暂无可做", "不能作答")
-        roots = [self.page, *self.page.frames]
-        for root in roots:
-            try:
-                body_text = root.locator("body").inner_text(timeout=2_000)
-            except (PlaywrightTimeoutError, PlaywrightError):
-                continue
-            normalized = re.sub(r"\s+", "", body_text)
+        for body_text in self.iter_body_texts():
+            normalized = compact_page_text(body_text)
             if any(keyword in normalized for keyword in keywords):
                 return True
         return False
@@ -1926,55 +2070,114 @@ class AssignmentAutoTester:
                 LOGGER.warning("Answer %s click did not produce a verifiable selected state.", letter)
         return selected_any
 
-    def verify_answer_control_selected(self, control: Locator, description: str) -> bool:
+    def apply_choice_answers_exact(
+        self,
+        answers: List[str],
+        controls: Dict[str, Locator],
+        question_type: str,
+    ) -> bool:
+        target = {str(answer).strip().upper() for answer in answers if str(answer).strip()}
+        if not target:
+            LOGGER.warning("Exact choice application received no target answers.")
+            return False
+
+        missing = sorted(letter for letter in target if letter not in controls)
+        if missing:
+            LOGGER.warning("Exact choice answers have no matching controls: %s", missing)
+            return False
+
+        if not self.actions_allowed():
+            LOGGER.info("Dry-run: would set exact answer(s) %s", sorted(target))
+            return True
+
+        success = True
+        for letter in sorted(target, key=lambda item: list(controls).index(item)):
+            control = controls[letter]
+            if self.answer_control_is_selected(control):
+                continue
+            if not self.safe_click(control, f"exact answer {letter}"):
+                success = False
+                continue
+            if not self.verify_answer_control_selected(control, f"exact answer {letter}"):
+                success = False
+
+        if question_type != "single":
+            for letter, control in controls.items():
+                if letter in target or not self.answer_control_is_selected(control):
+                    continue
+                if not self.safe_click(control, f"deselect extra answer {letter}"):
+                    success = False
+                    continue
+                if self.answer_control_is_selected(control):
+                    LOGGER.warning("Extra answer %s remained selected after deselect click.", letter)
+                    success = False
+
+        for letter, control in controls.items():
+            selected = self.answer_control_is_selected(control)
+            should_select = letter in target
+            if selected != should_select:
+                LOGGER.warning(
+                    "Exact answer final state mismatch for %s: selected=%s expected=%s",
+                    letter,
+                    selected,
+                    should_select,
+                )
+                success = False
+        return success
+
+    def answer_control_is_selected(self, control: Locator) -> bool:
         try:
-            selected = control.evaluate(
-                """el => {
-                    const truthy = value => String(value || "").toLowerCase() === "true";
-                    const hasSelectedClass = node => {
-                        if (!node || !node.className) {
-                            return false;
-                        }
-                        const className = String(node.className).toLowerCase();
-                        return /(^|[-_\\s])(checked|selected|active|current|cur|on|choose|chosen|check)([-_\\s]|$)/.test(className);
-                    };
-                    const isCheckedInput = node => {
-                        return node
-                            && node.matches
-                            && node.matches("input[type='radio'], input[type='checkbox']")
-                            && node.checked;
-                    };
-                    if (isCheckedInput(el) || truthy(el.getAttribute("aria-checked")) || hasSelectedClass(el)) {
-                        return true;
-                    }
-                    const input = el.querySelector && el.querySelector("input[type='radio'], input[type='checkbox']");
-                    if (isCheckedInput(input)) {
-                        return true;
-                    }
-                    const ariaNode = el.querySelector && el.querySelector("[aria-checked='true']");
-                    if (ariaNode) {
-                        return true;
-                    }
-                    let node = el.parentElement;
-                    let depth = 0;
-                    while (node && depth < 4) {
-                        if (hasSelectedClass(node)) {
+            return bool(
+                control.evaluate(
+                    """el => {
+                        const truthy = value => String(value || "").toLowerCase() === "true";
+                        const hasSelectedClass = node => {
+                            if (!node || !node.className) {
+                                return false;
+                            }
+                            const className = String(node.className).toLowerCase();
+                            return /(^|[-_\\s])(checked|selected|active|current|cur|on|choose|chosen|check)([-_\\s]|$)/.test(className);
+                        };
+                        const isCheckedInput = node => {
+                            return node
+                                && node.matches
+                                && node.matches("input[type='radio'], input[type='checkbox']")
+                                && node.checked;
+                        };
+                        if (isCheckedInput(el) || truthy(el.getAttribute("aria-checked")) || hasSelectedClass(el)) {
                             return true;
                         }
-                        node = node.parentElement;
-                        depth += 1;
-                    }
-                    return false;
-                }""",
-                timeout=self.config.get("action_timeout_ms", 5_000),
+                        const input = el.querySelector && el.querySelector("input[type='radio'], input[type='checkbox']");
+                        if (isCheckedInput(input)) {
+                            return true;
+                        }
+                        const ariaNode = el.querySelector && el.querySelector("[aria-checked='true']");
+                        if (ariaNode) {
+                            return true;
+                        }
+                        let node = el.parentElement;
+                        let depth = 0;
+                        while (node && depth < 4) {
+                            if (hasSelectedClass(node)) {
+                                return true;
+                            }
+                            node = node.parentElement;
+                            depth += 1;
+                        }
+                        return false;
+                    }""",
+                    timeout=self.config.get("action_timeout_ms", 5_000),
+                )
             )
-            if selected:
-                return True
-            LOGGER.warning("Selected-state verification failed for %s", description)
-            return False
         except (PlaywrightTimeoutError, PlaywrightError) as exc:
-            LOGGER.warning("Selected-state verification failed for %s: %s", description, exc)
+            LOGGER.warning("Selected-state read failed: %s", exc)
             return False
+
+    def verify_answer_control_selected(self, control: Locator, description: str) -> bool:
+        if self.answer_control_is_selected(control):
+            return True
+        LOGGER.warning("Selected-state verification failed for %s", description)
+        return False
 
     def apply_text_answer(self, answer_text: str, controls: Dict[str, Locator]) -> bool:
         return self.apply_text_answers([answer_text], controls)
@@ -1982,7 +2185,7 @@ class AssignmentAutoTester:
     def apply_text_answers(self, answers: List[str], controls: Dict[str, Locator]) -> bool:
         text_controls = [
             (key, controls[key])
-            for key in sorted(controls)
+            for key in sorted(controls, key=self.text_answer_key_sort_key)
             if key.startswith("__text_")
         ]
         if not text_controls and "__text__" in controls:
@@ -2057,6 +2260,12 @@ class AssignmentAutoTester:
             LOGGER.warning("Fill text answer #%s JS fallback failed: %s", index, fallback_exc)
             return False
 
+    def text_answer_key_sort_key(self, key: str) -> Tuple[int, str]:
+        match = re.fullmatch(r"__text_(\d+)__", key)
+        if not match:
+            return (0, key)
+        return (int(match.group(1)), key)
+
     def click_next_or_submit(self) -> bool:
         self.reading_delay()
         if not self.actions_allowed() or not self.config["allow_submission"]:
@@ -2104,6 +2313,157 @@ class AssignmentAutoTester:
             )
             return False
         return True
+
+    def reviewed_answer_file(self) -> str:
+        return str(self.config.get("reviewed_answer_file") or "").strip()
+
+    def load_reviewed_answer_map(self) -> Dict[int, List[str]]:
+        if self._reviewed_answer_map is not None:
+            return self._reviewed_answer_map
+
+        path = self.reviewed_answer_file()
+        if not path:
+            self._reviewed_answer_map = {}
+            return self._reviewed_answer_map
+
+        with open(path, "r", encoding="utf-8") as handle:
+            raw_data = json.load(handle)
+
+        expected_assignment = ""
+        if isinstance(raw_data, dict):
+            expected_assignment = str(raw_data.get("assignment") or raw_data.get("title") or "").strip()
+            candidates = raw_data.get("candidates")
+            if isinstance(candidates, list):
+                for candidate in candidates:
+                    if not isinstance(candidate, dict):
+                        continue
+                    if candidate.get("outcome") == "pre_submit_review" or candidate.get("rows") or candidate.get("answers"):
+                        raw_data = candidate
+                        expected_assignment = str(
+                            raw_data.get("assignment") or raw_data.get("title") or expected_assignment
+                        ).strip()
+                        break
+            entries = raw_data.get("answers") or raw_data.get("rows") or raw_data
+        else:
+            entries = raw_data
+
+        if expected_assignment and self.current_candidate_title and not self.assignment_title_matches(
+            expected_assignment,
+            self.current_candidate_title,
+        ):
+            self.request_manual_halt(
+                "Reviewed answer file does not match current assignment candidate; stopping before submit. "
+                f"reviewed={expected_assignment} current={self.current_candidate_title}"
+            )
+            self._reviewed_answer_map = {}
+            return self._reviewed_answer_map
+
+        answer_map: Dict[int, List[str]] = {}
+        if isinstance(entries, dict):
+            for key, value in entries.items():
+                index = self.parse_reviewed_answer_index(key)
+                if index is None:
+                    continue
+                answer_map[index] = self.normalize_reviewed_answer_entry(value)
+        elif isinstance(entries, list):
+            for row in entries:
+                if not isinstance(row, dict):
+                    continue
+                index = self.parse_reviewed_answer_index(row.get("i", row.get("index")))
+                if index is None:
+                    continue
+                value = row.get("answers", row.get("selected", row.get("answer")))
+                answer_map[index] = self.normalize_reviewed_answer_entry(value)
+
+        self._reviewed_answer_map = answer_map
+        LOGGER.info("Loaded reviewed answer file %s with %s question(s).", path, len(answer_map))
+        return self._reviewed_answer_map
+
+    def assignment_title_matches(self, reviewed_title: str, current_title: str) -> bool:
+        reviewed = compact_page_text(reviewed_title)
+        current = compact_page_text(current_title)
+        return bool(reviewed and current and (reviewed in current or current in reviewed))
+
+    def parse_reviewed_answer_index(self, value: Any) -> Optional[int]:
+        match = re.search(r"\d+", str(value or ""))
+        if not match:
+            return None
+        try:
+            return int(match.group(0))
+        except ValueError:
+            return None
+
+    def normalize_reviewed_answer_entry(self, value: Any) -> List[str]:
+        if isinstance(value, dict):
+            value = value.get("answers", value.get("selected", value.get("answer")))
+        if isinstance(value, str):
+            raw_items = [item for item in re.split(r"[/,，;；\n]+", value) if item.strip()]
+        elif isinstance(value, list):
+            raw_items = [str(item) for item in value if str(item).strip()]
+        else:
+            raw_items = [str(value)] if value is not None and str(value).strip() else []
+
+        normalized: List[str] = []
+        for item in raw_items:
+            text = item.strip()
+            indexed_match = re.fullmatch(r"\d+\s*:\s*(.+)", text)
+            if indexed_match:
+                text = indexed_match.group(1).strip()
+            if text:
+                normalized.append(text)
+        return normalized
+
+    def reviewed_answers_for_question(
+        self,
+        index: int,
+        question_type: str,
+        options: Dict[str, str],
+    ) -> Optional[List[str]]:
+        if not self.reviewed_answer_file():
+            return None
+        answer_map = self.load_reviewed_answer_map()
+        raw_answers = answer_map.get(index)
+        if not raw_answers:
+            self.request_manual_halt(f"Reviewed answer file is missing question #{index}; stopping before submit.")
+            return []
+        answers = normalize_ai_answers(raw_answers, question_type, options)
+        if not answers:
+            self.request_manual_halt(
+                f"Reviewed answer file has no usable answer for question #{index}: {raw_answers}"
+            )
+            return []
+        return answers
+
+    def manual_review_required_before_submit(self) -> bool:
+        return bool(self.config.get("require_manual_review_before_submit")) and not self.reviewed_answer_file()
+
+    def write_pre_submit_review_report(
+        self,
+        answer_summary: List[Dict[str, Any]],
+        processed: int,
+        selected: int,
+    ) -> str:
+        output_dir = str(self.config.get("review_output_dir") or "logs/reviews")
+        os.makedirs(output_dir, exist_ok=True)
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        path = os.path.join(output_dir, f"assignment_pre_submit_review_{timestamp}.json")
+        report = {
+            "outcome": "pre_submit_review_required",
+            "url": self.page.url if self.page else "",
+            "processed": processed,
+            "selected_or_mapped": selected,
+            "risks": self.assignment_risks,
+            "answers": {
+                str(row["index"]): row["answers"]
+                for row in answer_summary
+                if row.get("applied")
+            },
+            "rows": answer_summary,
+        }
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(report, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+        return path
 
     def submit_current_page(self) -> bool:
         if not self.page:
@@ -2155,6 +2515,9 @@ class AssignmentAutoTester:
                 return True
             if self.extract_score_info():
                 LOGGER.info("[Action] 提交完成已通过分数信息验证。")
+                return True
+            if self.is_submitted_result_page():
+                LOGGER.info("[Action] 提交完成已通过答案结果态验证。")
                 return True
             try:
                 submit_button = self.find_locator(
@@ -2311,7 +2674,7 @@ class AssignmentAutoTester:
 
         processed = 0
         selected = 0
-        answer_summary: List[Tuple[int, str, List[str], bool]] = []
+        answer_summary: List[Dict[str, Any]] = []
         capped_by_max_questions = False
         if first_extracted and not containers:
             containers_to_process: List[Optional[Locator]] = [None]
@@ -2341,14 +2704,19 @@ class AssignmentAutoTester:
             expected_answer_count = self.expected_answer_count(extracted)
             processed += 1
             LOGGER.info("Question #%s type=%s text=%s", index, question_type, question_text[:80])
-            answers = self.decide_answers(
-                question_text,
-                options,
-                question_type,
-                extracted.media,
-                question_index=index,
-                sub_question_count=expected_answer_count,
-            )
+            reviewed_answers = self.reviewed_answers_for_question(index, question_type, options)
+            if reviewed_answers is not None:
+                answers = reviewed_answers
+                LOGGER.info("Question #%s using reviewed answer(s): %s", index, answers)
+            else:
+                answers = self.decide_answers(
+                    question_text,
+                    options,
+                    question_type,
+                    extracted.media,
+                    question_index=index,
+                    sub_question_count=expected_answer_count,
+                )
             if not answers:
                 LOGGER.warning("Question #%s has no usable answer; skipping.", index)
                 if self.halt_requested:
@@ -2365,15 +2733,27 @@ class AssignmentAutoTester:
                 applied = self.apply_shared_option_answers(answers, controls, len(extracted.sub_questions or []))
             else:
                 applied = self.apply_answers(answers, controls)
-            answer_summary.append((index, question_type, answers, applied))
+            answer_summary.append(
+                {
+                    "index": index,
+                    "question_type": question_type,
+                    "answers": answers,
+                    "applied": applied,
+                    "question": re.sub(r"\s+", " ", question_text).strip(),
+                    "options": options,
+                }
+            )
             if applied:
                 selected += 1
 
         LOGGER.info("Processed %s question(s); selected/mapped %s question(s).", processed, selected)
         if answer_summary:
             summary_text = "; ".join(
-                f"#{index}:{question_type}:{'/'.join(answers)}:{'applied' if applied else 'not-applied'}"
-                for index, question_type, answers, applied in answer_summary
+                (
+                    f"#{row['index']}:{row['question_type']}:{'/'.join(row['answers'])}:"
+                    f"{'applied' if row['applied'] else 'not-applied'}"
+                )
+                for row in answer_summary
             )
             LOGGER.info("Answer summary before next/submit: %s", summary_text)
         if selected < processed:
@@ -2399,7 +2779,89 @@ class AssignmentAutoTester:
             return False
         if processed == 0:
             return False
+        if self.manual_review_required_before_submit():
+            report_path = self.write_pre_submit_review_report(answer_summary, processed, selected)
+            self.request_manual_halt(
+                "提交前人工复核报告已生成，未提交。"
+                f"review_file={report_path}；复核后用 ASSIGNMENT_REVIEWED_ANSWER_FILE 指向修正后的文件再提交。"
+            )
+            self.pause_for_low_confidence_halt()
+            return False
         return self.click_next_or_submit()
+
+    def parse_visible_correct_answer_letters(self, text: str) -> List[str]:
+        normalized = unicodedata.normalize("NFKC", text or "")
+        match = re.search(
+            r"正确答案\s*[:：]\s*([A-Z](?:\s*[,，、/\s]*[A-Z])*)",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return []
+        return re.findall(r"[A-Z]", match.group(1).upper())
+
+    def retry_submitted_result_page_with_visible_correct_answers(self) -> bool:
+        containers = self.all_question_containers()
+        if not containers:
+            self.request_manual_halt("低分重做页没有可解析的题目容器，无法按可见正确答案重提。")
+            return False
+
+        processed = 0
+        applied_count = 0
+        answer_summary: List[Tuple[int, str, List[str], bool]] = []
+        for index, container in enumerate(containers, start=1):
+            if index > self.config["max_questions"]:
+                self.request_manual_halt(
+                    f"重做页题目数量超过 ASSIGNMENT_MAX_QUESTIONS={self.config['max_questions']}，已停止提交。"
+                )
+                return False
+
+            extracted = self.extract_question_from_container(container)
+            if not extracted:
+                self.request_manual_halt(f"重做页第 {index} 题题目提取失败，无法安全重提。")
+                return False
+            if extracted.question_type not in {"single", "multiple"}:
+                self.request_manual_halt(
+                    f"重做页第 {index} 题类型 {extracted.question_type} 暂不支持按可见正确答案自动重提。"
+                )
+                return False
+
+            try:
+                container_text = container.inner_text(timeout=1_000)
+            except (PlaywrightTimeoutError, PlaywrightError) as exc:
+                self.request_manual_halt(f"重做页第 {index} 题读取正确答案失败：{exc}")
+                return False
+
+            correct_letters = self.parse_visible_correct_answer_letters(container_text)
+            answers = normalize_ai_answers(correct_letters, extracted.question_type, extracted.options)
+            if not answers:
+                self.request_manual_halt(f"重做页第 {index} 题没有可解析的可见正确答案，已停止重提。")
+                return False
+
+            processed += 1
+            LOGGER.info("Retry question #%s with visible correct answer(s): %s", index, answers)
+            applied = self.apply_choice_answers_exact(answers, extracted.controls, extracted.question_type)
+            answer_summary.append((index, extracted.question_type, answers, applied))
+            if applied:
+                applied_count += 1
+
+        LOGGER.info(
+            "Visible-correct retry processed %s question(s); selected/mapped %s question(s).",
+            processed,
+            applied_count,
+        )
+        if answer_summary:
+            summary_text = "; ".join(
+                f"#{index}:{question_type}:{'/'.join(answers)}:{'applied' if applied else 'not-applied'}"
+                for index, question_type, answers, applied in answer_summary
+            )
+            LOGGER.info("Visible-correct retry answer summary before submit: %s", summary_text)
+        if not processed or applied_count < processed:
+            self.request_manual_halt(
+                f"重做页答案映射不完整：processed={processed} selected_or_mapped={applied_count}，已停止提交。"
+            )
+            return False
+        return self.submit_current_page()
 
     def decide_answers(
         self,
@@ -2570,11 +3032,24 @@ class AssignmentAutoTester:
         )
         LOGGER.warning(self.halt_reason)
 
+    def request_low_score_marker_halt(self, text_snippet: str) -> None:
+        threshold = float(self.config.get("min_acceptable_score", 80.0))
+        self.halt_requested = True
+        self.halt_reason = (
+            "提交后检测到未达到及格线/重做提示，已停止继续扫描。"
+            f"threshold={threshold:g} page_text={text_snippet}"
+        )
+        LOGGER.warning(self.halt_reason)
+
     def inspect_score_after_submit(self) -> None:
         if not self.page or not self.config.get("stop_on_low_score"):
             return
         score_info = self.extract_score_info()
         if not score_info:
+            retry_marker = self.extract_low_score_retry_marker()
+            if retry_marker:
+                self.request_low_score_marker_halt(retry_marker)
+                return
             LOGGER.info("No score detected after submit; continuing.")
             return
         score, total, snippet = score_info
@@ -2586,12 +3061,7 @@ class AssignmentAutoTester:
     def extract_score_info(self) -> Optional[Tuple[float, float, str]]:
         if not self.page:
             return None
-        roots = [self.page, *self.page.frames]
-        for root in roots:
-            try:
-                body_text = root.locator("body").inner_text(timeout=2_000)
-            except (PlaywrightTimeoutError, PlaywrightError):
-                continue
+        for body_text in self.iter_body_texts():
             normalized = re.sub(r"\s+", " ", body_text).strip()
             score = self.parse_score_text(normalized)
             if score:
@@ -2689,7 +3159,7 @@ class AssignmentAutoTester:
                     outcomes.append(outcome)
                     LOGGER.info("Candidate outcome: %s", outcome)
                     if self.halt_requested:
-                        LOGGER.warning("Monitor stopped because low-confidence halt was requested: %s", self.halt_reason)
+                        LOGGER.warning("Monitor stopped because a guard halt was requested: %s", self.halt_reason)
                         return
                 LOGGER.info("Monitor scan round %s completed at %s", rounds_completed, time.strftime("%Y-%m-%d %H:%M:%S"))
 

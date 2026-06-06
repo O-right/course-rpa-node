@@ -69,6 +69,7 @@ CONFIG: Dict[str, Any] = {
     "next_navigation_timeout_ms": env_int("CX_NEXT_NAVIGATION_TIMEOUT_MS", 10_000),
     "courseware_hold_seconds": env_float("CX_COURSEWARE_HOLD_SECONDS", 1.0),
     "completion_settle_seconds": env_float("CX_COMPLETION_SETTLE_SECONDS", 5.0),
+    "video_initial_wait_seconds": env_float("CX_VIDEO_INITIAL_WAIT_SECONDS", 12.0),
     "screenshot_dir": os.getenv("CX_SCREENSHOT_DIR", "logs/screenshots"),
     "selectors": {
         "username_input": "#phone",
@@ -188,6 +189,53 @@ class CourseAutoTester:
                 add(keyword[: -len(suffix)])
         return terms
 
+    def find_course_link(self, keyword_terms: list[str]) -> tuple[Optional[Locator], str, str]:
+        if not self.page:
+            return None, "", ""
+
+        link_selectors = [
+            ".course-info a.color1",
+            ".course-info a",
+            ".course a.color1",
+            ".course a[target='_blank']",
+            "a.color1",
+            "a[target='_blank']",
+        ]
+        containers = [self.page] + self.page.frames
+        for container in containers:
+            for term in keyword_terms:
+                for selector in link_selectors:
+                    candidate = container.locator(selector).filter(has_text=term).first
+                    try:
+                        candidate.wait_for(state="visible", timeout=1_000)
+                        return candidate, term, selector
+                    except (PlaywrightTimeoutError, PlaywrightError):
+                        continue
+
+        # Last resort for non-Chaoxing layouts: avoid huge page containers that only
+        # match because they contain the course list.
+        for container in containers:
+            for term in keyword_terms:
+                candidates = container.get_by_text(term, exact=False)
+                try:
+                    count = min(candidates.count(), 10)
+                except PlaywrightError:
+                    continue
+                for index in range(count):
+                    candidate = candidates.nth(index)
+                    try:
+                        candidate.wait_for(state="visible", timeout=500)
+                        text_length = candidate.evaluate(
+                            "el => ((el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim()).length"
+                        )
+                        if text_length > 120:
+                            continue
+                        return candidate, term, "text fallback"
+                    except (PlaywrightTimeoutError, PlaywrightError):
+                        continue
+
+        return None, "", ""
+
     def find_locator_in_page_or_frames(
         self,
         selector: str,
@@ -267,6 +315,66 @@ class CourseAutoTester:
             return False
         return self.safe_click(target, description)
 
+    def scroll_catalogs_down(self) -> None:
+        if not self.page:
+            return
+
+        containers = [self.page] + self.page.frames
+        for container in containers:
+            try:
+                container.evaluate(
+                    """() => {
+                        const scrollables = [
+                            document.scrollingElement,
+                            document.documentElement,
+                            document.body,
+                            ...Array.from(document.querySelectorAll('*')).filter(element => {
+                                const style = window.getComputedStyle(element);
+                                return /(auto|scroll)/.test(style.overflowY)
+                                    && element.scrollHeight > element.clientHeight + 20;
+                            })
+                        ].filter(Boolean);
+                        const seen = new Set();
+                        for (const element of scrollables) {
+                            if (seen.has(element)) {
+                                continue;
+                            }
+                            seen.add(element);
+                            element.scrollTop = Math.min(
+                                element.scrollHeight,
+                                element.scrollTop + Math.max(500, element.clientHeight * 0.8)
+                            );
+                        }
+                    }"""
+                )
+            except PlaywrightError:
+                continue
+
+    def find_text_in_page_or_frames_with_scroll(self, text: str, description: str) -> Optional[Locator]:
+        if not self.page:
+            return None
+
+        deadline = time.monotonic() + self.config["lookup_timeout_ms"] / 1000
+        attempts = 0
+        while time.monotonic() < deadline:
+            containers = [self.page] + self.page.frames
+            for container in containers:
+                candidate = container.get_by_text(text, exact=False).first
+                try:
+                    candidate.wait_for(state="visible", timeout=700)
+                    return candidate
+                except (PlaywrightTimeoutError, PlaywrightError):
+                    continue
+
+            attempts += 1
+            print(f"未找到 [{description}: {text}]，向下滚动目录继续查找（第 {attempts} 次）。")
+            self.scroll_catalogs_down()
+            time.sleep(0.5)
+
+        current_url = self.page.url if self.page else ""
+        print(f"滚动查找后仍未找到 [{description}: {text}]，url={current_url}")
+        return None
+
     def safe_click_with_optional_popup(self, target: Locator, description: str) -> bool:
         if not self.page:
             return False
@@ -327,22 +435,10 @@ class CourseAutoTester:
         deadline = time.monotonic() + self.config["lookup_timeout_ms"] / 1000
         course: Optional[Locator] = None
         matched_term = keyword
+        matched_source = ""
 
         while time.monotonic() < deadline:
-            # 模糊匹配：在主页面和所有 frames 中查找包含关键词的可点击元素
-            containers = [self.page] + self.page.frames
-            for container in containers:
-                for term in keyword_terms:
-                    candidate = container.get_by_text(term, exact=False).first
-                    try:
-                        candidate.wait_for(state="visible", timeout=1_000)
-                        course = candidate
-                        matched_term = term
-                        break
-                    except (PlaywrightTimeoutError, PlaywrightError):
-                        continue
-                if course:
-                    break
+            course, matched_term, matched_source = self.find_course_link(keyword_terms)
             if course:
                 break
             time.sleep(0.5)
@@ -357,8 +453,23 @@ class CourseAutoTester:
 
         if matched_term != keyword:
             print(f"课程关键词 [{keyword}] 未直接命中，已用 [{matched_term}] 匹配。")
+        if matched_source:
+            print(f"课程入口匹配来源: {matched_source}")
+        before_url = self.page.url
+        course_href = ""
+        try:
+            course_href = course.get_attribute("href") or ""
+        except PlaywrightError:
+            course_href = ""
         if not self.safe_click_with_optional_popup(course, f"课程卡片: {keyword}"):
             return False
+        if self.page and self.page.url == before_url and course_href:
+            try:
+                print("课程链接点击后仍停留在课程列表，改用课程链接直接打开。")
+                self.page.goto(course_href, wait_until="domcontentloaded", timeout=self.config["timeout_ms"])
+            except PlaywrightError as exc:
+                print(f"直接打开课程链接失败: {exc}")
+                return False
         self.wait_for_page_settle("课程页")
         return True
 
@@ -373,8 +484,8 @@ class CourseAutoTester:
 
         chapter_keyword = self.config.get("chapter_keyword", "").strip()
         if chapter_keyword:
-            chapter = self.page.get_by_text(chapter_keyword, exact=False).first
-            clicked = self.safe_click_with_optional_popup(chapter, f"章节: {chapter_keyword}")
+            chapter = self.find_text_in_page_or_frames_with_scroll(chapter_keyword, "章节")
+            clicked = self.safe_click_with_optional_popup(chapter, f"章节: {chapter_keyword}") if chapter else False
         else:
             chapter = self.find_locator_in_page_or_frames(self.selectors["chapter_item"], "视频章节")
             clicked = self.safe_click_with_optional_popup(chapter, "视频章节") if chapter else False
@@ -472,6 +583,16 @@ class CourseAutoTester:
                     continue
         return videos
 
+    def wait_for_video_locators(self) -> list[Locator]:
+        deadline = time.monotonic() + max(0.0, float(self.config.get("video_initial_wait_seconds", 0.0)))
+        while True:
+            videos = self.video_locators()
+            if videos:
+                return videos
+            if time.monotonic() >= deadline:
+                return []
+            time.sleep(0.5)
+
     def incomplete_learning_signals(self) -> list[str]:
         if not self.page:
             return []
@@ -501,11 +622,6 @@ class CourseAutoTester:
                             return parts.join(' ');
                         };
                         const found = [];
-                        const bodyText = textOf(document.body || document.documentElement);
-                        if (/未完成任务点|当前视频不可拖拽|未达成|待完成/.test(bodyText)) {
-                            found.push('页面文本提示仍有未完成任务点');
-                        }
-
                         const activeSelectors = [
                             '.posCatalog_select',
                             '.active',
@@ -684,7 +800,7 @@ class CourseAutoTester:
         return False
 
     def process_current_learning_unit(self) -> bool:
-        videos = self.video_locators()
+        videos = self.wait_for_video_locators()
         if videos:
             print(f"当前学习页检测到 {len(videos)} 个 video 元素，将逐个处理。")
             for index, video in enumerate(videos, start=1):

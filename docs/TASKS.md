@@ -71,6 +71,11 @@
 - [x] Verify course watcher syntax, config parsing, and local next-section URL-change smoke test.
 - [x] Verify course watcher CLI help, argument forwarding through `run_chaoxing.ps1`, config override parsing, and conflicting `--headless --headed` rejection.
 - [x] Fix `“四史”专题课` course lookup so quote variants and `专题课` suffix fallbacks can still match the visible course card.
+- [x] Fix `“四史”专题课` course entry so the watcher clicks the real card link and falls back to direct href navigation if no popup opens.
+- [x] Add scrolling chapter-keyword lookup so `--chapter "6.1"` can open later catalog entries.
+- [x] Wait for nested video iframes before treating a Chaoxing learning page as non-video courseware.
+- [x] Avoid false unfinished detection from static completion-rule text after a task point is already green.
+- [x] Live-run `“四史”专题课` 6.1 through 100% video playback and verify the final no-next path reports completed.
 - [x] Live-test `中国近现代史纲要` with `--max-chapters 1 --headless --fast-actions`: opened course, watched one 52.5s video at 2x to completion, clicked next, and accepted same-URL page-content transition.
 - [x] Live-test `中国近现代史纲要` with `--max-chapters 5 --headless --fast-actions`: completed 5 learning task points, including 8 videos, no-video task handling, courseware quick-open handling, same-URL transitions, and onclick fallback after a click was intercepted by a completion overlay.
 - [x] Inspect OpenClaw Feishu-triggered `中国近现代史纲要` run and screenshots.
@@ -153,6 +158,9 @@
 - [x] Add high-DPI browser context, multi-blank text answer mapping, hidden textarea JS fallback, and Chaoxing prompt score parsing for real assignment runs.
 - [x] Diagnose the current `glm/chat2api` 401 after session-token refresh attempts; remote services are active but no valid `accessToken` is available.
 - [x] Restore a usable assignment AI backend and re-run `assignment_tester.ask_ai_brain_decision()` smoke before continuing the real full assignment scan.
+- [x] Refresh remote `glm/chat2api` access token on 2026-06-06 and verify local/public chat-completion smokes plus local `assignment_tester` wrapper.
+- [x] Harden remote `chat2api` session-refresh script so missing `accessToken` cannot overwrite a valid token file with an empty token.
+- [x] Verify remote `chat2api` raw `sessionToken` refresh path and confirm `chat2api-session-refresh.timer` remains active.
 - [x] Fix noisy AI JSON parsing and option-value-to-letter answer normalization in `assignment_tester.py`.
 - [x] Re-run bounded real assignment scan after the AI parsing fix and record evidence from the log.
 - [x] Inspect the 70/100 linear algebra result page, identify wrong questions, and confirm the low-score halt was caused by AI answer quality rather than submit or click mapping.
@@ -163,6 +171,17 @@
 - [x] Investigate biology 作业9 blank 0分 and English Unit 5 two 0分 sections through logs plus read-only live result-page inspection.
 - [x] Add assignment interaction regressions for hidden fill-in control ordering, high-risk text adjudication disagreement, and post-click selected-state verification.
 - [x] Sync repository handoff docs and validation state after the assignment/course watcher guardrail changes.
+- [x] Fix multi-blank text answer key ordering so `__text_10__` cannot be filled before `__text_2__`.
+- [x] Fix same-URL Chaoxing submitted result/retry page detection after submit.
+- [x] Add low-score/retry marker halt when a result page says `未达到及格线，请重做` without a parseable numeric score.
+- [x] Re-run the real assignment scan on 2026-06-06 and verify the submit-completion crash is gone; latest run halts on the low-score/retry guard.
+- [x] Handle the low-score/retry candidate with visible correct-answer retry and verify the final score.
+- [x] Submit biology 作业11 only after manual pre-submit review and selected-state verification.
+- [x] Fix malformed AI JSON fallback so usable `"answer"` data can be recovered conservatively without trusting malformed confidence.
+- [x] Enforce manual pre-submit review before real assignment submits by default, with generated review JSON and `ASSIGNMENT_REVIEWED_ANSWER_FILE` replay support.
+- [x] Manually inspect biology 作业10 candidate #5 answer set before submit and correct Q83 from `A/D/E` to `D/E`.
+- [x] Submit biology 作业10 from the reviewed answer file and verify score `95.5/100`.
+- [x] Continue the "no unsubmitted assignments" scan after the reviewed biology 作业10 submit and verify the no-unsubmitted stop condition.
 - [ ] Restore assignment tester safe defaults and real-site hard-block after the temporary experiment phase.
 - [ ] Run full browser flow until a video ends and next-chapter click is verified.
 

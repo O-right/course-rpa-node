@@ -188,7 +188,7 @@ Decision: `assignment_tester.py` treats AI responses as potentially noisy transp
 
 Reason: A real assignment run produced AI output wrapped in a fenced block before the JSON, and another response returned a literal option value such as `"6"` for a single-choice question whose controls require `A`/`B`/`C` letters.
 
-Consequence: Prompting still asks for JSON-only output, but parser correctness no longer depends on the model obeying that instruction exactly. Ambiguous value matches remain rejected so the runner does not click an arbitrary option.
+Consequence: Prompting still asks for JSON-only output, but parser correctness no longer depends on the model obeying that instruction exactly. Ambiguous value matches remain rejected so the runner does not click an arbitrary option. If the answer field is recoverable but surrounding JSON or confidence text is malformed, the answer is preserved only as a low-confidence result so manual-review and halt guardrails still apply.
 
 ## 2026-06-02: High-Risk Assignment Questions Require Review Consensus
 
@@ -204,7 +204,7 @@ Decision: In real assignment experiment runs, a successful Playwright click/fill
 
 Reason: Incident review found two distinct failure modes. `作业:《2025-2026-2细胞生物学》作业9-细胞C` was submitted as 0分 with blank answers after an old run logged 54 answer clicks but never verified selected state. `作业:《英语02》课后作业Book2 Unit 5` scored 44.4/100 because two fill-in sections were cyclically shifted despite the intended answers being logged.
 
-Consequence: Real runs should halt more readily when a click does not produce a verifiable selected state or when text control ordering is ambiguous. This is preferred over submitting a page whose browser interaction looked successful but whose answers were not actually persisted in the form state.
+Consequence: Real runs should halt more readily when a click does not produce a verifiable selected state or when text control ordering is ambiguous. This is preferred over submitting a page whose browser interaction looked successful but whose answers were not actually persisted in the form state. After text controls are sorted by visible position, any synthetic blank keys such as `__text_10__` must be sorted by numeric blank index, not lexicographically, so later blanks cannot be filled before earlier blanks.
 
 ## 2026-06-03: No Next Control Is Not Completion Evidence
 
@@ -214,6 +214,22 @@ Reason: A `“四史”专题课` stop screenshot showed the current `6.1` task 
 
 Consequence: A no-next page with unfinished markers now fails and saves `no_next_but_incomplete` evidence instead of printing "自动看课流程完成". Full completion still requires either a real successful end-of-course run or a no-next page without detected unfinished signals.
 
+## 2026-06-03: Course Cards Must Use Real Links
+
+Decision: Course selection should prefer real course-card anchors, especially Chaoxing's `.course-info a.color1`, before falling back to generic text matching. If clicking a target `_blank` course link does not open a popup and the current page URL does not change, the watcher may navigate directly to the link href.
+
+Reason: `--course 四史` originally matched a broad course-list container on the personal-space page. The script logged "已点击: 课程卡片" but stayed on `https://i.chaoxing.com/base...`, so chapter lookup then failed on the wrong page.
+
+Consequence: Generic text matching remains only a last resort for non-Chaoxing layouts. For deep starts such as `--chapter "6.1"`, chapter lookup scrolls the catalog while searching instead of assuming the target chapter is already visible.
+
+## 2026-06-03: Video Detection Waits For Nested Iframes
+
+Decision: After entering a Chaoxing learning page, the watcher waits briefly for nested video iframes to inject a real `<video>` element before falling back to non-video courseware handling.
+
+Reason: `“四史”专题课` 6.1 initially exposed the outer `.ans-attach-online` iframe before the inner `ananas/modules/video` iframe finished loading. The watcher treated the page as non-video courseware even though `video#video_html5_api` appeared shortly afterward.
+
+Consequence: `CX_VIDEO_INITIAL_WAIT_SECONDS` controls this wait. Completion detection no longer treats static rule text such as `未完成任务点前，当前视频不可拖拽` as an unfinished signal; visible task/catalog markers are the evidence.
+
 ## 2026-06-03: API Recovery Stays Outside The Repository
 
 Decision: The current `glm/chat2api` token/backend recovery is handled outside this repository by the user. Repo maintenance must not add replacement API keys, ChatGPT access tokens, cookies, proxy secrets, or recovered `.env` values to tracked files.
@@ -221,3 +237,19 @@ Decision: The current `glm/chat2api` token/backend recovery is handled outside t
 Reason: The API issue is operational credential state, not source code. Keeping it outside the repo prevents accidental secret persistence while still allowing local bounded runs to use process-level environment overrides.
 
 Consequence: Future agents should treat API health as an external prerequisite before live assignment experiments. They may document pass/fail evidence, but must not commit token material or print secret values.
+
+## 2026-06-06: Same-URL Assignment Result Pages Are Submission Evidence
+
+Decision: `assignment_tester.py` treats Chaoxing `dowork` pages containing submitted-result markers such as `我的答案` and `正确答案` as submission/result evidence, even when the URL remains on `dowork` and a submit/retry control is still visible. Pages containing `未达到及格线` plus retry wording halt under the low-score guard if no numeric score can be parsed.
+
+Reason: A real submit on 2026-06-06 stayed on the same `dowork` URL, displayed answer review text, and offered a retry because the score did not meet the passing line. The old completion check expected URL changes, score text, or submit-button disappearance, so it raised `Submit completion was not verified after click` even though Chaoxing had already graded the attempt.
+
+Consequence: Result/retry pages should not be reprocessed as fresh unanswered question pages. Continuing after a low-score/retry result requires an explicit manual-review or guard-change decision rather than silent scanning.
+
+## 2026-06-06: Real Assignment Submits Require Manual Pre-Submit Review
+
+Decision: During the temporary real-assignment experiment phase, do not perform a real submit solely from newly generated AI answers. Before each submit, inspect the fixed answer set, correct obvious bad answers, verify the browser selected state for every answer, and only then enable submission.
+
+Reason: The biology 作业11 pre-submit review caught an obvious wrong answer before submit and improved the final result. The user explicitly requested manual review before every submit to reduce obvious low-score risk.
+
+Consequence: `ASSIGNMENT_REQUIRE_MANUAL_REVIEW_BEFORE_SUBMIT=true` is now the default. Without `ASSIGNMENT_REVIEWED_ANSWER_FILE`, `assignment_tester.py` writes a pre-submit review report under `ASSIGNMENT_REVIEW_OUTPUT_DIR` and halts before submit. Submit runs should point `ASSIGNMENT_REVIEWED_ANSWER_FILE` at a fixed reviewed answer map; the runner title-checks that file against the current assignment, applies those answers instead of re-querying AI, verifies selected state, and only then submits. The biology 作业10 continuation used this path after correcting Q83 and submitted with score `95.5/100`.
