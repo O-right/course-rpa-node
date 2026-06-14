@@ -253,3 +253,51 @@ Decision: During the temporary real-assignment experiment phase, do not perform 
 Reason: The biology 作业11 pre-submit review caught an obvious wrong answer before submit and improved the final result. The user explicitly requested manual review before every submit to reduce obvious low-score risk.
 
 Consequence: `ASSIGNMENT_REQUIRE_MANUAL_REVIEW_BEFORE_SUBMIT=true` is now the default. Without `ASSIGNMENT_REVIEWED_ANSWER_FILE`, `assignment_tester.py` writes a pre-submit review report under `ASSIGNMENT_REVIEW_OUTPUT_DIR` and halts before submit. Submit runs should point `ASSIGNMENT_REVIEWED_ANSWER_FILE` at a fixed reviewed answer map; the runner title-checks that file against the current assignment, applies those answers instead of re-querying AI, verifies selected state, and only then submits. The biology 作业10 continuation used this path after correcting Q83 and submitted with score `95.5/100`.
+
+## 2026-06-08: Course Playback Recovery Prioritizes Real Player State
+
+Decision: Course video recovery should click the real player controls before falling back to JS `video.play()`, re-locate `<video>` elements after overlay dismissal or iframe recreation, and treat the configured playback rate as best-effort when a task page explicitly says speed-up is not allowed.
+
+Reason: The `2026春-线性代数` `2.4 克拉默法则` task repeatedly paused because Video.js required a `.vjs-big-play-button` click and the page text said `未完成任务点前，当前视频不可倍速、不可拖拽`. Forcing `playbackRate=2` caused the platform to pause or clamp the video, while a real player-control click allowed the task to finish at the platform-allowed speed.
+
+Consequence: Playback rate drift alone is no longer a recovery trigger when media time is progressing. Recovery remains strict on paused or stalled playback, but full-course completion is favored over repeatedly forcing a blocked 2x rate. Logs should distinguish platform-limited 1x playback from actual playback failure.
+
+## 2026-06-09: Course Playback Waits Only On True No-Source Videos
+
+Decision: Video readiness checks should treat `networkState=3` with no usable media metadata as a broken or missing source, while allowing ordinary loading states such as `networkState=1` to proceed into the normal click-and-play path.
+
+Reason: The `2026春-线性代数` retry showed that a valid first video can sit at `readyState=0` and `networkState=1` before play is clicked, but the earlier failure at task point 2 video 4/6 surfaced as `networkState=3` with `NotSupportedError: The element has no supported sources.`
+
+Consequence: `main.py` now reserves the extra source-wait path for true no-source states, using `CX_VIDEO_SOURCE_READY_WAIT_SECONDS` only when the element looks broken instead of blocking normal video startup.
+
+## 2026-06-13: Course Watcher Skips Confirmed Completed Current Tasks
+
+Decision: Before processing videos on the current learning page, `main.py` reads the active chapter/catalog item and skips playback only when that current item is explicitly marked completed.
+
+Reason: A course can reopen on a task point that is already complete. Processing the visible `<video>` again wastes time and can cause duplicate course-watching behavior.
+
+Consequence: The skip is conservative: unknown catalog state still falls back to normal processing, and completion/unfinished text is scoped to the current catalog item so sibling task labels such as `未完成` do not contaminate the current task's status. Chaoxing active-state classes such as `poscatalog_active` are treated as active catalog items.
+
+## 2026-06-14: No-Source Course Videos Try Alternate Routes
+
+Decision: When a course video reports a true no-source state (`networkState=3` with no duration/current time/ready metadata) and the page visibly offers alternate playback routes such as `公网1` / `公网2`, the watcher switches to an unselected route and waits again for media metadata before failing the task.
+
+Reason: The `道德与法治` `6.5 恋爱、婚姻家庭中的道德规范` run stopped with `networkState=3`, `duration=0`, and a platform error that offered other routes. The page exposed an intended recovery control, so switching route is more accurate than treating the first source failure as terminal.
+
+Consequence: Route switching is scoped to pages with visible route/error hints and only runs once per media-readiness wait. If no alternate route is visible or the alternate route still cannot load metadata, the watcher preserves the existing failure screenshots and non-zero exit path.
+
+## 2026-06-14: Course Video Completion Requires A Real End State
+
+Decision: Do not treat `currentTime >= duration - 1` as enough evidence that a course video is complete. The watcher should wait for the browser video element to report `ended`, or for the video to be near the end and paused, then pause briefly before advancing.
+
+Reason: Follow-up `道德与法治` audits showed `6.5` could reappear as unfinished in a new session after the watcher left at roughly `702.1/702.4s` while playback was still running. Waiting until `702.4/702.4s` with `paused=True` produced a later fresh-session audit with no unfinished task points.
+
+Consequence: `CX_VIDEO_COMPLETION_SETTLE_SECONDS` controls the short post-completion wait. This adds a small delay at the end of each video, but it is preferable to advancing before Chaoxing has persisted task completion.
+
+## 2026-06-14: Course Chapters May Contain Multiple Resource Cards
+
+Decision: Treat Chaoxing `#prev_tab` / `.prev_list` resource cards inside one chapter as part of the same learning unit. When a page shows multiple cards such as `1课件 / 2视频`, process each visible card in order and re-run video detection after switching cards before advancing to the next chapter.
+
+Reason: `2025-2026(2) 物理学` `5.1 物质的微观模型` initially loaded only the `num=0` PDF/课件 card, while the actual video was hidden behind a second `2视频` card. The old no-video path handled the PDF and then advanced, leaving the video task unplayed.
+
+Consequence: Non-video cards still get the quick courseware handling, but video cards are now reached through the same chapter page. `CX_LEARNING_CARD_SWITCH_WAIT_SECONDS` controls the brief wait after changing cards.

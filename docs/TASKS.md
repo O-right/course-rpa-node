@@ -83,7 +83,7 @@
 - [x] Retry stale video progress reads by re-locating the indexed video before failing.
 - [x] Re-run a fresh OpenClaw Feishu-triggered course check after the stale-video-locator fix.
 - [x] Confirm the fresh check passed the old task point 3 video 3/3 failure point.
-- [ ] Run a separate explicit full-course validation if full completion evidence is needed.
+- [x] Run a separate explicit full-course validation if full completion evidence is needed.
 - [x] Create tutai deployment documentation in `D:\infra-vault\servers\tutai\course-rpa-node.md`.
 - [x] Create a local tutai deployment archive excluding `.env`, logs, and caches.
 - [x] Verify tutai SSH host key fingerprint and update local `known_hosts`.
@@ -128,6 +128,17 @@
 - [x] Optimize course watcher end-of-video polling based on remaining duration and playback rate.
 - [x] Extend `main.py --fast-actions` to cap video polling and non-video courseware hold time.
 - [x] Prevent course watcher from reporting completion when no next control is available but the current task still shows unfinished markers.
+- [x] Fix `2026春-线性代数` `2.4 克拉默法则` playback recovery: click the real Video.js play control, re-locate videos after iframe recreation, and treat platform-blocked speed-up as best-effort.
+- [x] Live-verify `2026春-线性代数` `2.4` completes and advances to the next unit.
+- [x] Fix `2026春-线性代数` `2.5` video startup handling so normal `networkState=1` loading can proceed, while true no-source `networkState=3` videos wait before recovery.
+- [x] Continue the active `2026春-线性代数` full-course run from `2.5` until all knowledge points are complete or the next failure is captured.
+- [x] Skip videos for the current active task point when the course catalog explicitly marks that task as completed.
+- [x] Fix `道德与法治` `6.5` true no-source playback failure by switching visible alternate video routes before declaring recovery failure.
+- [x] Resume `道德与法治` from `6.5` and verify the course watcher reaches the final no-unfinished-task completion state.
+- [x] Fix early end-of-video completion so the watcher waits for a persisted ended/near-end-paused state before advancing.
+- [x] Re-audit `道德与法治` in a fresh session and verify no unfinished task points remain.
+- [x] Fix mixed Chaoxing resource-card chapters so `1课件 / 2视频` style pages switch into video cards before advancing.
+- [x] Verify the mixed-card fix on live `2025-2026(2) 物理学` `5.1 物质的微观模型`.
 - [x] Initialize local Git repository and upload project to GitHub as `O-right/course-rpa-node`.
 - [x] Verify `.env`, logs, deployment archive, and caches are excluded from GitHub upload.
 - [x] Reconcile local Git history with the API-created GitHub upload and push normal `main` tracking `origin/main`.
@@ -183,7 +194,7 @@
 - [x] Submit biology 作业10 from the reviewed answer file and verify score `95.5/100`.
 - [x] Continue the "no unsubmitted assignments" scan after the reviewed biology 作业10 submit and verify the no-unsubmitted stop condition.
 - [ ] Restore assignment tester safe defaults and real-site hard-block after the temporary experiment phase.
-- [ ] Run full browser flow until a video ends and next-chapter click is verified.
+- [x] Run full browser flow until a video ends and next-chapter click is verified.
 
 ## Deferred
 
